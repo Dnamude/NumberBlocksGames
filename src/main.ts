@@ -15,6 +15,47 @@ declare global {
   }
 }
 
+const SETTINGS_STORAGE_KEY = 'numberblock-rally-settings-v1';
+
+function loadSavedSettings(): ParentSettings {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_PARENT_SETTINGS };
+    const parsed = JSON.parse(raw) as Partial<ParentSettings> | null;
+    if (!parsed || typeof parsed !== 'object') {
+      return { ...DEFAULT_PARENT_SETTINGS };
+    }
+    const merged: ParentSettings = {
+      ...DEFAULT_PARENT_SETTINGS,
+      ...parsed,
+    };
+    if (merged.maxCountTarget !== 5 && merged.maxCountTarget !== 10) {
+      merged.maxCountTarget = DEFAULT_PARENT_SETTINGS.maxCountTarget;
+    }
+    if (merged.carSpeed !== 'slow' && merged.carSpeed !== 'normal' && merged.carSpeed !== 'fast') {
+      merged.carSpeed = DEFAULT_PARENT_SETTINGS.carSpeed;
+    }
+    if (
+      merged.raceLength !== 'short' &&
+      merged.raceLength !== 'medium' &&
+      merged.raceLength !== 'long'
+    ) {
+      merged.raceLength = DEFAULT_PARENT_SETTINGS.raceLength;
+    }
+    return merged;
+  } catch {
+    return { ...DEFAULT_PARENT_SETTINGS };
+  }
+}
+
+function saveSettings(settings: ParentSettings): void {
+  try {
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Ignore storage quota or Safari private mode errors
+  }
+}
+
 function bootstrap(): void {
   const canvas = document.getElementById('game-canvas');
   const uiRoot = document.getElementById('ui-root');
@@ -23,7 +64,7 @@ function bootstrap(): void {
     throw new Error('Numberblock Rally: Missing #game-canvas or #ui-root element.');
   }
 
-  let currentSettings: ParentSettings = { ...DEFAULT_PARENT_SETTINGS };
+  let currentSettings: ParentSettings = loadSavedSettings();
   const sound = new SoundEngine(currentSettings);
   let sim: GameSimulation | null = null;
 
@@ -66,6 +107,7 @@ function bootstrap(): void {
     },
     onSettingsChange: (nextSettings) => {
       currentSettings = { ...nextSettings };
+      saveSettings(currentSettings);
       sim?.updateSettings(currentSettings);
     },
     onFamilyVoiceChanged: () => {

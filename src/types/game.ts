@@ -19,6 +19,9 @@ export interface BlockOffset {
   hasDiceDots?: number;
 }
 
+export type CarSpeedSetting = 'slow' | 'normal' | 'fast';
+export type RaceLengthSetting = 'short' | 'medium' | 'long';
+
 export interface NumberblockSpec {
   id: NumberblockId;
   name: string;
@@ -43,6 +46,7 @@ export interface NumberblockSpec {
     | 'grey-square'
     | 'rocket-stars';
   wheelCountLabel: string;
+  carStyleName: string;
   baseSpeed: number;
 }
 
@@ -54,6 +58,8 @@ export interface ParentSettings {
   autoSteerAssist: boolean;
   maxCountTarget: 5 | 10;
   pitStopQuizzes: boolean;
+  carSpeed: CarSpeedSetting;
+  raceLength: RaceLengthSetting;
 }
 
 export interface MathEventPayload {

@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { SoundEngine } from '../audio/SoundEngine';
 import {
   ALL_NUMBERBLOCK_IDS,
+  CAR_SPEED_PRESETS,
   EPISODE_COMMENTARY_LINES,
   NUMBERBLOCK_SPECS,
   NUMBER_WORDS,
+  RACE_LENGTH_PRESETS,
 } from '../data/numberblocks';
 import {
   GameMode,
@@ -19,7 +21,7 @@ import {
 import { UIManager } from '../ui/UIManager';
 import { NumberblockAnimState } from './NumberblockMesh';
 import { ParticleSystem } from './ParticleSystem';
-import { RallyKartRig } from './RallyKartMesh';
+import { createPoppedNumberblockActor, RallyKartRig } from './RallyKartMesh';
 import { SceneManager } from './SceneManager';
 import { RallyTrack } from './TrackBuilder';
 
@@ -31,11 +33,21 @@ interface AiRacer {
   targetLaneX: number;
   yOffset: number;
   vy: number;
-  baseSpeed: number;
+  speedFactor: number;
   currentSpeed: number;
   phase: number;
   laneTimer: number;
   boostTimer: number;
+  bumpCooldown: number;
+  isFriendlyHelper: boolean;
+}
+
+interface PoppedActor {
+  mesh: THREE.Group;
+  velocity: THREE.Vector3;
+  rotVel: THREE.Vector3;
+  life: number;
+  groundY: number;
 }
 
 const GARAGE_ORIGIN = new THREE.Vector3(0, 240, -180);
@@ -100,7 +112,10 @@ export class GameSimulation {
   private bumpAnimTimer = 0;
   private bumpSlowTimer = 0;
   private sneezeAnimTimer = 0;
+  private slowMoTimer = 0;
   private dustEmitTimer = 0;
+
+  private poppedActors: PoppedActor[] = [];
 
   // Race progression & stats
   private countProgress = 0;
@@ -112,10 +127,10 @@ export class GameSimulation {
   private commentaryIndex = 0;
   private commentaryTimer = 0;
 
-  // Scripted race moments
-  private doubleDipperWarned = false;
-  private nineSneezeTriggered = false;
-  private pitStopTriggered = false;
+  // Scripted race moments & story beats
+  private storyBeatIndex = 0;
+  private pitStopCountTriggered = 0;
+  private pitStopSecondTriggered = false;
   private pitStopSolved = false;
   private currentPitStop: PitStopQuestion | null = null;
   private pitStopResumeTimerId: number | null = null;
@@ -166,7 +181,8 @@ export class GameSimulation {
     this.particles = new ParticleSystem();
     this.sceneManager.scene.add(this.particles.group);
 
-    this.track = new RallyTrack(this.mode, this.settings.maxCountTarget);
+    const initialLength = RACE_LENGTH_PRESETS[this.settings.raceLength].trackLength;
+    this.track = new RallyTrack(this.mode, this.settings.maxCountTarget, initialLength);
     this.sceneManager.scene.add(this.track.group);
 
     this.playerKart = new RallyKartRig(this.selectedRacer);
@@ -249,6 +265,7 @@ export class GameSimulation {
     this.sound.startMusic('menu');
 
     this.particles.clear();
+    this.clearPoppedActors();
     this.track.group.visible = false;
     this.playerKart.group.visible = false;
     this.setAiRacersVisible(false);
@@ -359,8 +376,9 @@ export class GameSimulation {
 
     this.sound.playUiClick();
     this.particles.clear();
+    this.clearPoppedActors();
 
-    // Rebuild fresh track for the selected mode & count goal
+    // Rebuild fresh track for the selected mode, count goal & race length
     this.rebuildTrack(this.mode, this.settings.maxCountTarget);
     this.track.group.visible = true;
     this.garageGroup.visible = false;
@@ -381,6 +399,7 @@ export class GameSimulation {
     this.bumpAnimTimer = 0;
     this.bumpSlowTimer = 0;
     this.sneezeAnimTimer = 0;
+    this.slowMoTimer = 0;
     this.dustEmitTimer = 0;
 
     this.countProgress = 0;
@@ -392,9 +411,9 @@ export class GameSimulation {
     this.commentaryTimer = 0;
     this.commentary = 'Welcome to the Numberblock Rally!';
 
-    this.doubleDipperWarned = false;
-    this.nineSneezeTriggered = false;
-    this.pitStopTriggered = false;
+    this.storyBeatIndex = 0;
+    this.pitStopCountTriggered = 0;
+    this.pitStopSecondTriggered = false;
     this.pitStopSolved = false;
     this.currentPitStop = null;
     this.prevJumpPressed = false;
@@ -433,14 +452,15 @@ export class GameSimulation {
   public updateSettings(settings: ParentSettings): void {
     if (this.disposed) return;
     const prevTarget = this.settings.maxCountTarget;
+    const prevLength = this.settings.raceLength;
     this.settings = { ...settings };
     this.sound.updateSettings(this.settings);
     this.ui.updateSettings(this.settings);
 
     if (
-      prevTarget !== settings.maxCountTarget &&
       this.screen === 'title' &&
-      this.mode === 'count-cruise'
+      (prevLength !== settings.raceLength ||
+        (prevTarget !== settings.maxCountTarget && this.mode === 'count-cruise'))
     ) {
       this.rebuildTrack(this.mode, this.settings.maxCountTarget);
       this.positionTitleKartsOnTrack();
@@ -545,6 +565,7 @@ export class GameSimulation {
 
     this.disposeTitleKarts();
     this.disposeAiRacers();
+    this.clearPoppedActors();
 
     this.sceneManager.scene.remove(this.playerKart.group);
     this.playerKart.dispose();
@@ -581,6 +602,7 @@ export class GameSimulation {
     this.sound.startMusic('menu');
 
     this.particles.clear();
+    this.clearPoppedActors();
     if (rebuildTrack) {
       this.rebuildTrack(this.mode, this.settings.maxCountTarget);
     }
@@ -595,7 +617,8 @@ export class GameSimulation {
   private rebuildTrack(mode: GameMode, maxCountTarget: 5 | 10): void {
     this.sceneManager.scene.remove(this.track.group);
     this.track.dispose();
-    this.track = new RallyTrack(mode, maxCountTarget);
+    const trackLength = RACE_LENGTH_PRESETS[this.settings.raceLength].trackLength;
+    this.track = new RallyTrack(mode, maxCountTarget, trackLength);
     this.sceneManager.scene.add(this.track.group);
   }
 
@@ -640,17 +663,51 @@ export class GameSimulation {
   private spawnAiRacers(): void {
     this.disposeAiRacers();
 
-    const otherIds = ALL_NUMBERBLOCK_IDS.filter((id) => id !== this.selectedRacer);
-    const chosenIds: NumberblockId[] =
-      this.mode === 'count-cruise' ? otherIds.slice(0, 3) : otherIds;
+    if (this.mode === 'count-cruise') {
+      // Spawn 4 friendly roving Numberblock 1 buddies cruising ahead for N + 1 additions
+      const lanePattern = [-4.2, 4.2, -2.2, 2.4];
+      for (let i = 0; i < 4; i++) {
+        const kart = new RallyKartRig(1);
+        this.sceneManager.scene.add(kart.group);
+        const startS = 38 + i * 32;
+        const laneX = lanePattern[i % lanePattern.length];
+        const racer: AiRacer = {
+          id: 1,
+          kart,
+          s: startS,
+          laneX,
+          targetLaneX: laneX,
+          yOffset: 0,
+          vy: 0,
+          speedFactor: 0.72 + (i % 2) * 0.06,
+          currentSpeed: 0,
+          phase: i * 1.4,
+          laneTimer: 1.5 + i * 0.5,
+          boostTimer: 0,
+          bumpCooldown: 0,
+          isFriendlyHelper: true,
+        };
+        this.placeKartOnTrack(kart, racer.s, racer.laneX, 0, 0);
+        this.aiRacers.push(racer);
+      }
+      return;
+    }
 
-    chosenIds.forEach((id, idx) => {
+    const otherIds = ALL_NUMBERBLOCK_IDS.filter((id) => id !== this.selectedRacer);
+    // Keep 3 small friendly Numberblocks near the player's cruising band for frequent A + B addition!
+    const friendlyIds: NumberblockId[] = [1, 2, 3];
+    let friendlyAssigned = 0;
+
+    otherIds.forEach((id, idx) => {
       const kart = new RallyKartRig(id);
       this.sceneManager.scene.add(kart.group);
 
+      const isSmallBuddy = friendlyIds.includes(id) && friendlyAssigned < 3;
+      if (isSmallBuddy) friendlyAssigned++;
+
       const row = Math.floor(idx / 3);
       const col = idx % 3;
-      const startS = this.mode === 'count-cruise' ? 18 + idx * 3.5 : 13 + row * 3.5;
+      const startS = isSmallBuddy ? 26 + friendlyAssigned * 14 : 13 + row * 3.5;
       const laneOffset = (col - 1) * 4.4 + ((idx % 2) * 1.1 - 0.55);
       const maxLane = this.track.roadHalfWidth - 2.2;
       const laneX = THREE.MathUtils.clamp(laneOffset, -maxLane, maxLane);
@@ -663,14 +720,13 @@ export class GameSimulation {
         targetLaneX: laneX,
         yOffset: 0,
         vy: 0,
-        baseSpeed:
-          this.mode === 'count-cruise'
-            ? 24.8 + (idx % 3) * 0.6
-            : 29.8 + (idx % 4) * 0.85,
+        speedFactor: isSmallBuddy ? 0.92 + (idx % 2) * 0.04 : 0.96 + (idx % 4) * 0.03,
         currentSpeed: 0,
         phase: idx * 1.17,
         laneTimer: 1.2 + (idx % 3) * 0.7,
         boostTimer: 0,
+        bumpCooldown: 0,
+        isFriendlyHelper: isSmallBuddy,
       };
 
       this.placeKartOnTrack(kart, racer.s, racer.laneX, 0, 0);
@@ -841,7 +897,12 @@ export class GameSimulation {
         break;
     }
 
-    this.particles.update(dt);
+    const particleDt =
+      this.screen === 'playing' && !this.paused && this.slowMoTimer > 0
+        ? dt * 0.42
+        : dt;
+    this.particles.update(particleDt);
+    this.updatePoppedActors(particleDt);
   }
 
   private updateTitle(dt: number): void {
@@ -963,8 +1024,6 @@ export class GameSimulation {
   }
 
   private updatePlaying(dt: number): void {
-    this.track.update(dt, this.elapsedTime);
-
     if (this.countdownHideTimer > 0) {
       this.countdownHideTimer -= dt;
       if (this.countdownHideTimer <= 0) {
@@ -973,16 +1032,26 @@ export class GameSimulation {
     }
 
     if (this.paused) {
+      this.track.update(dt, this.elapsedTime);
       this.sound.updateKartMotion(0, false, false);
       this.sceneManager.updateEnvironment(dt, this.elapsedTime, this.playerKart.group.position);
       return;
     }
 
+    // Slow-Motion Maths Magic Moment (lets young kids watch blocks combine or wheels pop!)
+    let simDt = dt;
+    if (this.slowMoTimer > 0) {
+      this.slowMoTimer = Math.max(0, this.slowMoTimer - dt);
+      simDt = dt * 0.28;
+    }
+
+    this.track.update(simDt, this.elapsedTime);
+
     // Update timers
-    if (this.boostTimer > 0) this.boostTimer = Math.max(0, this.boostTimer - dt);
-    if (this.bumpAnimTimer > 0) this.bumpAnimTimer = Math.max(0, this.bumpAnimTimer - dt);
-    if (this.bumpSlowTimer > 0) this.bumpSlowTimer = Math.max(0, this.bumpSlowTimer - dt);
-    if (this.sneezeAnimTimer > 0) this.sneezeAnimTimer = Math.max(0, this.sneezeAnimTimer - dt);
+    if (this.boostTimer > 0) this.boostTimer = Math.max(0, this.boostTimer - simDt);
+    if (this.bumpAnimTimer > 0) this.bumpAnimTimer = Math.max(0, this.bumpAnimTimer - simDt);
+    if (this.bumpSlowTimer > 0) this.bumpSlowTimer = Math.max(0, this.bumpSlowTimer - simDt);
+    if (this.sneezeAnimTimer > 0) this.sneezeAnimTimer = Math.max(0, this.sneezeAnimTimer - simDt);
 
     // Combine keyboard & touch input
     const left = this.keyboardInput.left || this.touchInput.left;
@@ -1003,25 +1072,30 @@ export class GameSimulation {
     this.prevJumpPressed = jumpDown;
     this.prevBoostPressed = boostDown;
 
+    // Look up CAR_SPEED_PRESETS dynamically every frame so Parent Settings apply immediately
+    const speedPreset = CAR_SPEED_PRESETS[this.settings.carSpeed];
     const spec = NUMBERBLOCK_SPECS[this.currentNumber];
-    const baseCruise = this.mode === 'count-cruise' ? 26.0 : 32.0;
+    const baseCruise =
+      this.mode === 'count-cruise' ? speedPreset.cruiseSpeed : speedPreset.rallySpeed;
     let targetSpeed = baseCruise * spec.baseSpeed;
-    if (this.boostTimer > 0) targetSpeed += 13.0;
-    if (this.bumpSlowTimer > 0) targetSpeed -= 7.0;
+    if (this.boostTimer > 0) targetSpeed += speedPreset.boostBonus;
+    if (this.bumpSlowTimer > 0) targetSpeed -= baseCruise * 0.24;
+    targetSpeed = Math.max(9.0, targetSpeed);
 
-    const accelAlpha = 1 - Math.exp(-5.5 * dt);
+    const accelAlpha = 1 - Math.exp(-5.5 * simDt);
     this.playerSpeed = THREE.MathUtils.lerp(this.playerSpeed, targetSpeed, accelAlpha);
 
     // Advance forward along track
-    this.playerS += this.playerSpeed * dt;
+    this.playerS += this.playerSpeed * simDt;
 
     // Lateral steering (+ Toddler Auto-Steer Assist when idle)
     const maxLane = this.track.roadHalfWidth - 1.9;
     let effectiveSteer = manualSteer;
     let lateralDelta = 0;
 
+    const steerRate = 12.5 + baseCruise * 0.14;
     if (Math.abs(manualSteer) > 0.05) {
-      lateralDelta = manualSteer * 15.5 * dt;
+      lateralDelta = manualSteer * steerRate * simDt;
       this.playerLane = THREE.MathUtils.clamp(
         this.playerLane + lateralDelta,
         -maxLane,
@@ -1030,8 +1104,8 @@ export class GameSimulation {
     } else if (this.settings.autoSteerAssist) {
       const desiredLane = this.computeAssistTargetLane();
       const diff = desiredLane - this.playerLane;
-      const maxStep = 5.6 * dt;
-      lateralDelta = THREE.MathUtils.clamp(diff * 2.2 * dt, -maxStep, maxStep);
+      const maxStep = 5.4 * simDt;
+      lateralDelta = THREE.MathUtils.clamp(diff * 2.2 * simDt, -maxStep, maxStep);
       this.playerLane = THREE.MathUtils.clamp(
         this.playerLane + lateralDelta,
         -maxLane,
@@ -1067,8 +1141,8 @@ export class GameSimulation {
     }
 
     // Vertical jump physics
-    this.playerVy -= 30.0 * dt;
-    this.playerY += this.playerVy * dt;
+    this.playerVy -= 30.0 * simDt;
+    this.playerY += this.playerVy * simDt;
     if (this.playerY <= 0) {
       if (this.wasAirborne && this.playerVy < -3) {
         const landPos = this.track.getWorldPosition(
@@ -1085,7 +1159,10 @@ export class GameSimulation {
     this.wasAirborne = isAirborne;
 
     // Position and orient player kart
-    const yawOffset = Math.atan2(lateralDelta / Math.max(dt, 0.001), Math.max(this.playerSpeed, 12));
+    const yawOffset = Math.atan2(
+      lateralDelta / Math.max(simDt, 0.001),
+      Math.max(this.playerSpeed, 10)
+    );
     this.placeKartOnTrack(
       this.playerKart,
       this.playerS,
@@ -1102,7 +1179,7 @@ export class GameSimulation {
     else if (this.boostTimer > 0.8) animState = 'celebrate';
 
     this.playerKart.update(
-      dt,
+      simDt,
       this.elapsedTime,
       this.playerSpeed,
       -effectiveSteer * 0.65,
@@ -1111,7 +1188,7 @@ export class GameSimulation {
     );
 
     // Emit boost sparkles / wheel dust trail
-    this.dustEmitTimer += dt;
+    this.dustEmitTimer += simDt;
     if (this.dustEmitTimer >= (this.boostTimer > 0 ? 0.07 : 0.16) && !isAirborne) {
       this.dustEmitTimer = 0;
       if (this.boostTimer > 0) {
@@ -1121,11 +1198,15 @@ export class GameSimulation {
       }
     }
 
-    // Check pickups, gates, rocks, ramps, Double-Dipper, Nine's sneeze & mud
-    this.evaluateTrackInteractions();
+    const trackSpan = Math.max(1, this.track.length - 56);
+    const trackProgress = THREE.MathUtils.clamp((this.playerS - 14) / trackSpan, 0, 1);
 
-    // Update AI rivals
-    this.updateAiRacers(dt);
+    // Check pickups, gates, rocks, ramps, Double-Dipper, mud & episode story beats
+    this.evaluateTrackInteractions(trackProgress);
+
+    // Update AI rivals & check racer-to-racer bump addition (A + B = C)
+    this.updateAiRacers(simDt, baseCruise);
+    this.evaluateAiBumpAddition();
 
     // Periodic ambient commentary refresh
     this.commentaryTimer += dt;
@@ -1138,14 +1219,9 @@ export class GameSimulation {
     // Camera follow & live pedal-kart audio + final-stretch music
     const sample = this.track.sampleAt(this.playerS);
     const speedRatio = THREE.MathUtils.clamp(
-      (this.playerSpeed - 18) / 26 + (this.boostTimer > 0 ? 0.3 : 0),
+      (this.playerSpeed - 10) / 24 + (this.boostTimer > 0 ? 0.28 : 0),
       0,
       1.25
-    );
-    const trackProgress = THREE.MathUtils.clamp(
-      (this.playerS - 14) / (this.track.length - 56),
-      0,
-      1
     );
     this.sound.updateKartMotion(
       speedRatio,
@@ -1163,19 +1239,29 @@ export class GameSimulation {
     );
     this.sceneManager.updateEnvironment(dt, this.elapsedTime, this.playerKart.group.position);
 
-    // Check Pit-Stop midpoint quiz
-    if (
-      this.settings.pitStopQuizzes &&
-      !this.pitStopTriggered &&
-      this.playerS >= 505 &&
-      this.playerS < 535
-    ) {
-      this.triggerPitStopChallenge();
-      return;
+    // Check normalized Pit-Stop midpoint quiz (and 2nd Pit-Stop on Long races!)
+    if (this.settings.pitStopQuizzes) {
+      if (this.pitStopCountTriggered === 0 && trackProgress >= 0.44 && trackProgress < 0.56) {
+        this.pitStopCountTriggered = 1;
+        this.triggerPitStopChallenge();
+        return;
+      }
+      if (
+        this.settings.raceLength === 'long' &&
+        !this.pitStopSecondTriggered &&
+        this.pitStopCountTriggered === 1 &&
+        trackProgress >= 0.76 &&
+        trackProgress < 0.86
+      ) {
+        this.pitStopSecondTriggered = true;
+        this.pitStopCountTriggered = 2;
+        this.triggerPitStopChallenge();
+        return;
+      }
     }
 
     // Check Finish Line
-    if (this.playerS >= this.track.length - 42) {
+    if (this.playerS >= this.track.length - 44) {
       this.finishRace();
       return;
     }
@@ -1293,7 +1379,7 @@ export class GameSimulation {
     return 0;
   }
 
-  private evaluateTrackInteractions(): void {
+  private evaluateTrackInteractions(trackProgress: number): void {
     const roadHalf = this.track.roadHalfWidth;
     const playerWorldPos = this.track.getWorldPosition(
       this.playerS,
@@ -1348,6 +1434,7 @@ export class GameSimulation {
         case 'count-gate': {
           if (this.playerS >= feature.z) {
             feature.triggered = true;
+            const prev = this.currentNumber;
             const val = clampNumberblockId(feature.value ?? 1);
             this.countProgress = Math.max(this.countProgress, val);
             this.highestCount = Math.max(this.highestCount, val);
@@ -1357,10 +1444,18 @@ export class GameSimulation {
 
             const spec = NUMBERBLOCK_SPECS[val];
             this.sound.speakNumber(val, val);
-            this.ui.showCountPopup(val, `${NUMBER_WORDS[val]}!`, spec.primaryColor);
+            this.ui.showCountPopup(
+              val,
+              val === prev + 1 ? `+1! Now ${val} wheels!` : `${NUMBER_WORDS[val]}!`,
+              spec.primaryColor
+            );
             this.particles.emitConfetti(playerWorldPos, 28);
             this.particles.emitMathMagic(playerWorldPos, spec.primaryColor, 18);
-            this.setCommentary(`${NUMBER_WORDS[val]}! ${spec.catchphrase}`);
+            if (val === prev + 1) {
+              this.setCommentary(`+1! Now ${val} wheels! ${spec.catchphrase}`);
+            } else {
+              this.setCommentary(`${NUMBER_WORDS[val]}! ${spec.catchphrase}`);
+            }
           }
           break;
         }
@@ -1392,29 +1487,38 @@ export class GameSimulation {
                   this.sound.speakCharacter(1, 'Keep pedalling, One!', undefined, 'high');
                 } else {
                   const nextVal = clampNumberblockId(prev - drop);
-                  const actualDrop = prev - nextVal;
+                  const actualDrop = clampNumberblockId(prev - nextVal);
                   const oldColor = NUMBERBLOCK_SPECS[prev].primaryColor;
 
                   this.currentNumber = nextVal;
                   this.playerKart.setDriver(nextVal);
                   this.bumpAnimTimer = 0.75;
                   this.bumpSlowTimer = 0.55;
+                  this.slowMoTimer = 0.7;
                   this.equationsSolved++;
 
+                  this.spawnPoppedActor(actualDrop, playerWorldPos);
                   this.particles.emitPoppedBlocks(playerWorldPos, actualDrop, oldColor);
                   this.sound.playBumpSubtract();
                   this.sound.speakEquation(prev, '-', actualDrop, nextVal);
+
+                  const wheelWord = actualDrop === 1 ? '1 wheel' : `${actualDrop} wheels`;
+                  const subtitle =
+                    nextVal === 4
+                      ? `${prev} − ${actualDrop} = 4! Four-wheel drive!`
+                      : `${prev} wheels − ${wheelWord} = ${nextVal} wheels left!`;
+
                   this.ui.showMathBanner({
                     left: prev,
                     operator: '-',
                     right: actualDrop,
                     result: nextVal,
-                    title: 'Whoa! Bump!',
-                    subtitle: NUMBERBLOCK_SPECS[nextVal].rallyLine,
+                    title: 'Whoa! Wheels Popped Off!',
+                    subtitle,
                     voiceLine: '',
                     color: NUMBERBLOCK_SPECS[nextVal].primaryColor,
                   });
-                  this.setCommentary(`${prev} minus ${actualDrop} equals ${nextVal}!`);
+                  this.setCommentary(subtitle);
                 }
               }
             }
@@ -1434,14 +1538,16 @@ export class GameSimulation {
               const prev = this.currentNumber;
               const splitAmt = prev >= 5 ? 3 : 2;
               const nextVal = clampNumberblockId(prev - splitAmt);
-              const actualDrop = prev - nextVal;
+              const actualDrop = clampNumberblockId(prev - nextVal);
               const oldColor = NUMBERBLOCK_SPECS[prev].primaryColor;
 
               this.currentNumber = nextVal;
               this.playerKart.setDriver(nextVal);
               this.bumpAnimTimer = 0.75;
+              this.slowMoTimer = 0.7;
               this.equationsSolved++;
 
+              this.spawnPoppedActor(actualDrop, playerWorldPos);
               this.particles.emitPoppedBlocks(playerWorldPos, actualDrop, oldColor);
               this.sound.playBumpSubtract();
               this.sound.speakEquation(prev, '-', actualDrop, nextVal);
@@ -1451,17 +1557,21 @@ export class GameSimulation {
                 3,
                 'normal'
               );
+              const subtitle =
+                nextVal === 4
+                  ? `${prev} − ${actualDrop} = 4! Four-wheel drive!`
+                  : `${prev} wheels − ${actualDrop} wheels = ${nextVal} wheels left!`;
               this.ui.showMathBanner({
                 left: prev,
                 operator: '-',
                 right: actualDrop,
                 result: nextVal,
                 title: 'Double-Dipper Split!',
-                subtitle: "Wait, I'm commentating! No, I'M commentating!",
+                subtitle,
                 voiceLine: '',
                 color: '#FF7043',
               });
-              this.setCommentary("Wait, I'm commentating! No, I'M commentating!");
+              this.setCommentary(subtitle);
             } else {
               this.setCommentary('Tiny One zoomed right through the Double-Dipper!');
             }
@@ -1493,6 +1603,7 @@ export class GameSimulation {
               this.particles.emitConfetti(playerWorldPos, 18);
 
               if (actualAdded > 0) {
+                this.slowMoTimer = 0.65;
                 this.equationsSolved++;
                 this.sound.speakEquation(prev, '+', actualAdded, nextVal);
                 this.ui.showMathBanner({
@@ -1501,11 +1612,11 @@ export class GameSimulation {
                   right: actualAdded,
                   result: nextVal,
                   title: 'Maths Magic Boost!',
-                  subtitle: NUMBERBLOCK_SPECS[nextVal].rallyLine,
+                  subtitle: `${prev} wheels + ${actualAdded} wheels = ${nextVal} wheels!`,
                   voiceLine: '',
                   color: NUMBERBLOCK_SPECS[nextVal].primaryColor,
                 });
-                this.setCommentary(`${prev} plus ${actualAdded} equals ${nextVal}!`);
+                this.setCommentary(`${prev} wheels + ${actualAdded} = ${nextVal} wheels!`);
               } else {
                 this.sound.speakCharacter(
                   10,
@@ -1535,7 +1646,7 @@ export class GameSimulation {
             feature.triggered = true;
             this.particles.emitMudSplash(playerWorldPos, 22);
             this.sound.playMudSplash();
-            this.setCommentary('Splash! Almost at the finish line!');
+            this.setCommentary('Splash! Look at all those Ones — finish line ahead!');
             this.sound.playClip(
               'mud_splash',
               'Splash! Almost at the finish line!',
@@ -1551,81 +1662,359 @@ export class GameSimulation {
       }
     }
 
-    // 3. Double-Dipper commentary warning approaching s = 515
-    if (
-      this.mode === 'rally-math' &&
-      !this.doubleDipperWarned &&
-      this.playerS >= 515 &&
-      this.playerS < 555
-    ) {
-      this.doubleDipperWarned = true;
-      this.setCommentary('Hold on! Mind the Double-Dipper up ahead!');
-      this.sound.playClip(
-        'double_dipper_warn',
-        'Mind the Double-Dipper up ahead!',
-        'announcer',
-        'normal'
-      );
-    }
+    // 3. Full Numberblock Rally Story Arc Beats (by Track Progress 0..1)
+    if (this.mode === 'rally-math') {
+      if (this.storyBeatIndex === 0 && trackProgress >= 0.08) {
+        this.storyBeatIndex = 1;
+        this.setCommentary(
+          'Ten riders, ten pedal-powered cars! Watch for boulders and bump friends to ADD!'
+        );
+        this.sound.playClip(
+          'story_start_rally',
+          'Ten riders, ten pedal powered cars! Bump friends to add!',
+          3,
+          'normal'
+        );
+      } else if (this.storyBeatIndex <= 1 && trackProgress >= 0.28) {
+        this.storyBeatIndex = 2;
+        this.setCommentary("Who's got four-wheel drive? Count the wheels as you race!");
+        this.sound.playClip(
+          'story_four_wheel',
+          'Who has got four wheel drive? Count the wheels as you race!',
+          4,
+          'normal'
+        );
+      } else if (this.storyBeatIndex <= 2 && trackProgress >= 0.48) {
+        this.storyBeatIndex = 3;
+        this.setCommentary('Mind the Double-Dipper up ahead!');
+        this.sound.playClip(
+          'double_dipper_warn',
+          'Mind the Double-Dipper up ahead!',
+          'announcer',
+          'normal'
+        );
+      } else if (this.storyBeatIndex <= 3 && trackProgress >= 0.68) {
+        this.storyBeatIndex = 4;
+        if (this.currentNumber === 9) {
+          this.currentNumber = 8;
+          this.playerKart.setDriver(8);
+          this.sneezeAnimTimer = 1.0;
+          this.slowMoTimer = 0.7;
+          this.equationsSolved++;
 
-    // 4. Classic Nine "Ah-CHOO!" moment around s = 760
-    if (
-      this.mode === 'rally-math' &&
-      !this.nineSneezeTriggered &&
-      this.currentNumber === 9 &&
-      this.playerS >= 760
-    ) {
-      this.nineSneezeTriggered = true;
-      this.currentNumber = 8;
-      this.playerKart.setDriver(8);
-      this.sneezeAnimTimer = 1.0;
-      this.equationsSolved++;
-
-      this.sound.playSneeze();
-      this.particles.emitPoppedBlocks(playerWorldPos, 1, '#E53935');
-      this.sound.playClip('sneeze_nine', 'Ah-CHOO! Oh dear!', 9, 'high');
-      this.sound.playClip(
-        'eq_9_minus_1_8',
-        'Nine minus one equals eight! Octoblock, back in action!',
-        8,
-        'normal'
-      );
-      this.ui.showMathBanner({
-        left: 9,
-        operator: '-',
-        right: 1,
-        result: 8,
-        title: 'Ah-CHOO!',
-        subtitle: 'Octoblock, back in action!',
-        voiceLine: '',
-        color: NUMBERBLOCK_SPECS[8].primaryColor,
-      });
-      this.setCommentary('Ah-CHOO! Octoblock, back in action!');
+          this.sound.playSneeze();
+          this.spawnPoppedActor(1, playerWorldPos);
+          this.particles.emitPoppedBlocks(playerWorldPos, 1, '#E53935');
+          this.sound.playClip('sneeze_nine', 'Ah-CHOO! Oh dear!', 9, 'high');
+          this.sound.playClip(
+            'eq_9_minus_1_8',
+            'Nine minus one equals eight! Octoblock, back in action!',
+            8,
+            'normal'
+          );
+          this.ui.showMathBanner({
+            left: 9,
+            operator: '-',
+            right: 1,
+            result: 8,
+            title: 'Ah-CHOO!',
+            subtitle: 'Octoblock, back in action!',
+            voiceLine: '',
+            color: NUMBERBLOCK_SPECS[8].primaryColor,
+          });
+          this.setCommentary('Ah-CHOO! Octoblock, back in action!');
+        } else {
+          this.sound.playSneeze();
+          this.setCommentary('Dust cloud! Nine sneezed out a One!');
+          this.sound.playClip(
+            'sneeze_nine',
+            'Dust cloud! Nine sneezed out a One!',
+            3,
+            'normal'
+          );
+          // Send a friendly Numberblock 1 zooming right onto the road ahead to bump & add!
+          const helperOne =
+            this.aiRacers.find((r) => r.id === 1) ?? this.aiRacers[0];
+          if (helperOne) {
+            helperOne.id = 1;
+            helperOne.kart.setDriver(1);
+            helperOne.s = Math.min(this.track.length - 60, this.playerS + 22);
+            helperOne.laneX = THREE.MathUtils.clamp(this.playerLane * 0.6, -4.5, 4.5);
+            helperOne.targetLaneX = helperOne.laneX;
+            helperOne.bumpCooldown = 0;
+            helperOne.isFriendlyHelper = true;
+          }
+        }
+      } else if (this.storyBeatIndex <= 4 && trackProgress >= 0.83) {
+        this.storyBeatIndex = 5;
+        this.setCommentary(
+          'Splash into the Mud Puddle! Look at all those Ones — finish line ahead!'
+        );
+      }
     }
   }
 
-  private updateAiRacers(dt: number): void {
+  private evaluateAiBumpAddition(): void {
+    if (this.playerY >= 1.5) return;
+
+    const roadHalf = this.track.roadHalfWidth;
+    const playerWorldPos = this.track.getWorldPosition(
+      this.playerS,
+      this.playerLane / roadHalf,
+      this.playerY + 0.8
+    );
+
+    for (const ai of this.aiRacers) {
+      if (ai.bumpCooldown > 0) continue;
+      if (Math.abs(ai.s - this.playerS) >= 3.4 || Math.abs(ai.laneX - this.playerLane) >= 2.4) {
+        continue;
+      }
+
+      const prev = this.currentNumber;
+
+      if (this.mode === 'count-cruise') {
+        ai.bumpCooldown = 2.6;
+        // Reposition friendly 1 ahead
+        ai.s = Math.min(this.track.length - 55, this.playerS + 75 + Math.random() * 45);
+        ai.laneX = (Math.random() - 0.5) * (roadHalf * 1.1);
+        ai.targetLaneX = ai.laneX;
+
+        if (prev < this.settings.maxCountTarget) {
+          const nextVal = clampNumberblockId(prev + 1);
+          this.currentNumber = nextVal;
+          this.countProgress = Math.max(this.countProgress, nextVal);
+          this.highestCount = Math.max(this.highestCount, nextVal);
+          this.playerKart.setDriver(nextVal);
+          this.boostTimer = Math.max(this.boostTimer, 1.5);
+          this.slowMoTimer = 0.65;
+          this.equationsSolved++;
+
+          const spec = NUMBERBLOCK_SPECS[nextVal];
+          this.sound.playCombineMagic();
+          this.sound.speakEquation(prev, '+', 1, nextVal);
+          this.particles.emitMathMagic(playerWorldPos, spec.primaryColor, 24);
+          this.particles.emitConfetti(playerWorldPos, 20);
+          this.ui.showMathBanner({
+            left: prev,
+            operator: '+',
+            right: 1,
+            result: nextVal,
+            title: 'Counting Friend!',
+            subtitle: `${prev} wheels + 1 wheel = ${nextVal} wheels!`,
+            voiceLine: '',
+            color: spec.primaryColor,
+          });
+          this.setCommentary(`${NUMBER_WORDS[prev]} plus One equals ${NUMBER_WORDS[nextVal]}!`);
+        } else {
+          this.boostTimer = Math.max(this.boostTimer, 1.2);
+          this.sound.playBlobPickup();
+          this.particles.emitMathMagic(playerWorldPos, '#E53935', 14);
+          this.setCommentary(`High five! ${NUMBER_WORDS[prev]} is zooming!`);
+        }
+        return;
+      }
+
+      // Rally Math: Racer-to-Racer Bump Addition (A + B = C)
+      const A = prev;
+      const B = ai.id;
+
+      if (A + B <= 10) {
+        const C = clampNumberblockId(A + B);
+        this.currentNumber = C;
+        this.highestCount = Math.max(this.highestCount, C);
+        this.playerKart.setDriver(C);
+        this.boostTimer = Math.max(this.boostTimer, 2.1);
+        this.slowMoTimer = 0.65;
+        this.equationsSolved++;
+
+        const spec = NUMBERBLOCK_SPECS[C];
+        this.sound.playCombineMagic();
+        this.sound.speakEquation(A, '+', B, C);
+        this.particles.emitMathMagic(playerWorldPos, spec.primaryColor, 28);
+        this.particles.emitConfetti(playerWorldPos, 24);
+        this.ui.showMathBanner({
+          left: A,
+          operator: '+',
+          right: B,
+          result: C,
+          title: 'Friends Combined!',
+          subtitle: `${A} wheels + ${B} wheels = ${C} wheels!`,
+          voiceLine: '',
+          color: spec.primaryColor,
+        });
+        this.setCommentary(`${A} wheels + ${B} wheels = ${C} wheels!`);
+
+        // Gently reposition the bumped AI racer ahead reborn as a helpful small Numberblock (1..4)
+        const nextSmallId = ((Math.floor(Math.random() * 4) + 1) as NumberblockId);
+        ai.id = nextSmallId;
+        ai.kart.setDriver(nextSmallId);
+        ai.bumpCooldown = 2.8;
+        ai.isFriendlyHelper = true;
+        ai.s = Math.min(this.track.length - 55, this.playerS + 85 + Math.random() * 45);
+        ai.laneX = THREE.MathUtils.clamp((Math.random() - 0.5) * roadHalf * 1.2, -roadHalf + 2.4, roadHalf - 2.4);
+        ai.targetLaneX = ai.laneX;
+        return;
+      } else if (A < 10) {
+        const added = clampNumberblockId(10 - A);
+        const rem = Math.max(1, B - added) as NumberblockId;
+        this.currentNumber = 10;
+        this.highestCount = 10;
+        this.playerKart.setDriver(10);
+        this.boostTimer = Math.max(this.boostTimer, 2.4);
+        this.slowMoTimer = 0.65;
+        this.equationsSolved++;
+
+        ai.id = rem;
+        ai.kart.setDriver(rem);
+        ai.vy = 9.0;
+        ai.bumpCooldown = 3.0;
+
+        this.sound.playCombineMagic();
+        this.sound.speakEquation(A, '+', added, 10);
+        this.particles.emitMathMagic(playerWorldPos, NUMBERBLOCK_SPECS[10].accentColor, 28);
+        this.particles.emitConfetti(playerWorldPos, 26);
+        this.ui.showMathBanner({
+          left: A,
+          operator: '+',
+          right: added,
+          result: 10,
+          title: 'Build to Ten!',
+          subtitle: 'Ten wheels! Blast off!',
+          voiceLine: '',
+          color: '#E53935',
+        });
+        this.setCommentary(`${A} + ${added} = 10! Ten wheels! Blast off!`);
+        return;
+      } else {
+        ai.bumpCooldown = 2.5;
+        ai.vy = 7.5;
+        this.bumpAnimTimer = 0.45;
+        this.sound.playUiClick();
+        this.particles.emitMathMagic(playerWorldPos, '#FFD54F', 12);
+        this.setCommentary('Ten is full power! Watch out for rocks!');
+        return;
+      }
+    }
+  }
+
+  private spawnPoppedActor(droppedCount: NumberblockId, origin: THREE.Vector3): void {
+    const mesh = createPoppedNumberblockActor(droppedCount);
+    const side = Math.random() > 0.5 ? 1 : -1;
+    mesh.position.set(origin.x + side * 0.9, origin.y + 0.9, origin.z);
+    this.sceneManager.scene.add(mesh);
+
+    const sample = this.track.sampleAt(this.playerS);
+    const velocity = new THREE.Vector3()
+      .addScaledVector(sample.right, side * (4.2 + Math.random() * 2.5))
+      .addScaledVector(sample.tangent, -2.5)
+      .add(new THREE.Vector3(0, 8.5, 0));
+
+    this.poppedActors.push({
+      mesh,
+      velocity,
+      rotVel: new THREE.Vector3(
+        (Math.random() - 0.5) * 6,
+        (Math.random() - 0.5) * 7,
+        (Math.random() - 0.5) * 6
+      ),
+      life: 2.3,
+      groundY: sample.position.y + 0.35,
+    });
+  }
+
+  private updatePoppedActors(dt: number): void {
+    if (this.poppedActors.length === 0) return;
+    for (let i = this.poppedActors.length - 1; i >= 0; i--) {
+      const actor = this.poppedActors[i];
+      actor.life -= dt;
+      if (actor.life <= 0) {
+        this.sceneManager.scene.remove(actor.mesh);
+        this.disposeObjectTree(actor.mesh);
+        this.poppedActors.splice(i, 1);
+        continue;
+      }
+
+      actor.velocity.y -= 21.0 * dt;
+      actor.mesh.position.addScaledVector(actor.velocity, dt);
+      if (actor.mesh.position.y < actor.groundY) {
+        actor.mesh.position.y = actor.groundY;
+        if (actor.velocity.y < -1.5) {
+          actor.velocity.y = -actor.velocity.y * 0.52;
+          actor.velocity.x *= 0.78;
+          actor.velocity.z *= 0.78;
+        } else {
+          actor.velocity.y = 0;
+        }
+      }
+      actor.mesh.rotation.x += actor.rotVel.x * dt;
+      actor.mesh.rotation.y += actor.rotVel.y * dt;
+      actor.mesh.rotation.z += actor.rotVel.z * dt;
+
+      if (actor.life < 0.45) {
+        const s = Math.max(0.05, actor.life / 0.45);
+        actor.mesh.scale.setScalar(s);
+      }
+    }
+  }
+
+  private clearPoppedActors(): void {
+    for (const actor of this.poppedActors) {
+      this.sceneManager.scene.remove(actor.mesh);
+      this.disposeObjectTree(actor.mesh);
+    }
+    this.poppedActors = [];
+  }
+
+  private disposeObjectTree(root: THREE.Object3D): void {
+    const geos = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
+    root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh || obj instanceof THREE.Sprite) {
+        if ('geometry' in obj && obj.geometry instanceof THREE.BufferGeometry) {
+          geos.add(obj.geometry);
+        }
+        const matList = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of matList) {
+          if (m) mats.add(m);
+        }
+      }
+    });
+    for (const g of geos) g.dispose();
+    for (const m of mats) {
+      if ('map' in m && m.map instanceof THREE.Texture) {
+        m.map.dispose();
+      }
+      m.dispose();
+    }
+  }
+
+  private updateAiRacers(dt: number, playerBaseCruise: number): void {
     const roadHalf = this.track.roadHalfWidth;
     const maxLane = roadHalf - 2.1;
 
     for (const ai of this.aiRacers) {
-      // Gentle rubber-banding so rivals stay excitingly close
+      if (ai.bumpCooldown > 0) ai.bumpCooldown = Math.max(0, ai.bumpCooldown - dt);
+      if (ai.boostTimer > 0) ai.boostTimer = Math.max(0, ai.boostTimer - dt);
+
+      // Gentle rubber-banding + smart AI pacing so small friendly blocks stay reachable!
       const deltaS = ai.s - this.playerS;
       let rubber = 0;
       if (this.mode === 'count-cruise') {
-        // Friendly cruising buddies stay near & gently behind near the finish
-        if (deltaS > 12) rubber = -5.5;
-        else if (deltaS < -18) rubber = 4.5;
+        if (deltaS > 65) rubber = -playerBaseCruise * 0.35;
+        else if (deltaS < -12) rubber = playerBaseCruise * 0.45;
+      } else if (ai.isFriendlyHelper) {
+        // Keep friendly 1..4 buddies cruising within [-10, +55] ahead of player
+        if (deltaS > 55) rubber = -playerBaseCruise * 0.34;
+        else if (deltaS < -10) rubber = playerBaseCruise * 0.44;
       } else {
-        if (deltaS > 28) rubber = -4.2;
-        else if (deltaS < -24) rubber = 5.4;
+        if (deltaS > 36) rubber = -playerBaseCruise * 0.18;
+        else if (deltaS < -24) rubber = playerBaseCruise * 0.24;
       }
 
-      if (ai.boostTimer > 0) ai.boostTimer = Math.max(0, ai.boostTimer - dt);
-
+      const baseAiSpeed = playerBaseCruise * ai.speedFactor;
       const targetSpeed = Math.max(
-        18,
-        ai.baseSpeed + rubber + (ai.boostTimer > 0 ? 6.5 : 0)
+        7.5,
+        baseAiSpeed + rubber + (ai.boostTimer > 0 ? 4.5 : 0)
       );
       ai.currentSpeed = THREE.MathUtils.lerp(
         ai.currentSpeed || targetSpeed,
@@ -1673,7 +2062,7 @@ export class GameSimulation {
       }
 
       const latVel = (ai.laneX - prevLane) / Math.max(dt, 0.001);
-      const yawOffset = Math.atan2(latVel, Math.max(ai.currentSpeed, 12));
+      const yawOffset = Math.atan2(latVel, Math.max(ai.currentSpeed, 8));
       this.placeKartOnTrack(ai.kart, ai.s, ai.laneX, ai.yOffset, yawOffset);
 
       const steerVisual = THREE.MathUtils.clamp(-latVel * 0.06, -0.45, 0.45);
@@ -1693,7 +2082,6 @@ export class GameSimulation {
   // =========================================================================
 
   private triggerPitStopChallenge(): void {
-    this.pitStopTriggered = true;
     this.pitStopSolved = false;
     this.screen = 'pitstop';
 
@@ -1715,6 +2103,17 @@ export class GameSimulation {
 
     if (this.mode === 'count-cruise') {
       const targetMax = this.settings.maxCountTarget;
+      if (this.pitStopCountTriggered >= 2) {
+        return {
+          prompt: `Count the wheels on ${spec.name}'s car! How many?`,
+          voicePrompt: `Count the wheels on ${spec.name}'s car! How many?`,
+          visualType: 'count-wheels',
+          visualCount: this.currentNumber,
+          correctAnswer: this.currentNumber,
+          choices: this.buildChoices(this.currentNumber, 1, targetMax),
+          accentColor: spec.primaryColor,
+        };
+      }
       const count = 2 + Math.floor(Math.random() * Math.max(2, targetMax - 1));
       const clampedCount = Math.min(targetMax, Math.max(2, count)) as NumberblockId;
       const choices = this.buildChoices(clampedCount, 1, targetMax);
@@ -1730,28 +2129,29 @@ export class GameSimulation {
       };
     }
 
-    // Rally Math: alternate between wheel counting & gentle visual equation
+    // Rally Math: wheel-counting & live episode addition/subtraction matching player's car!
     const roll = Math.random();
-    if (roll < 0.34) {
-      const wheelCount = 4;
+    if (roll < 0.36) {
+      const wheelCount = this.currentNumber;
       return {
-        prompt: 'Pit-Stop Check! How many wheels are on a rally car?',
-        voicePrompt: 'Pit stop check! How many wheels are on a rally car?',
+        prompt: `Count the wheels on ${spec.name}'s car! How many?`,
+        voicePrompt: `Count the wheels! How many wheels are on ${spec.name}'s car?`,
         visualType: 'count-wheels',
         visualCount: wheelCount,
         correctAnswer: wheelCount,
-        choices: this.buildChoices(wheelCount, 2, 6),
+        choices: this.buildChoices(wheelCount, 1, 10),
         accentColor: spec.primaryColor,
       };
     }
 
+    const cur = this.currentNumber;
     const templates: Array<{ left: number; op: '+' | '-'; right: number; answer: number }> = [
-      { left: 3, op: '+', right: 3, answer: 6 },
-      { left: 4, op: '+', right: 2, answer: 6 },
-      { left: 5, op: '+', right: 3, answer: 8 },
+      { left: cur, op: cur <= 7 ? '+' : '-', right: cur <= 7 ? 2 : 1, answer: cur <= 7 ? cur + 2 : cur - 1 },
+      { left: 4, op: '+', right: 3, answer: 7 },
       { left: 10, op: '-', right: 1, answer: 9 },
-      { left: 8, op: '-', right: 2, answer: 6 },
-      { left: 7, op: '+', right: 2, answer: 9 },
+      { left: 9, op: '-', right: 1, answer: 8 },
+      { left: 7, op: '-', right: 3, answer: 4 },
+      { left: 3, op: '+', right: 5, answer: 8 },
     ];
     const picked = templates[Math.floor(Math.random() * templates.length)];
     const opWord = picked.op === '+' ? 'plus' : 'minus';
@@ -1765,7 +2165,7 @@ export class GameSimulation {
       operator: picked.op,
       rightNum: picked.right,
       correctAnswer: picked.answer,
-      choices: this.buildChoices(picked.answer, 2, 10),
+      choices: this.buildChoices(picked.answer, 1, 10),
       accentColor: spec.primaryColor,
     };
   }

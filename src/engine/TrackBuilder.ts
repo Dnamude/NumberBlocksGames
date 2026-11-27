@@ -56,7 +56,7 @@ const BLOB_COLORS = [
 
 export class RallyTrack {
   public group: THREE.Group;
-  public length = 1100;
+  public length: number;
   public roadHalfWidth = 11;
   public features: TrackFeature[] = [];
   public featureMeshes: Map<string, THREE.Object3D> = new Map();
@@ -68,13 +68,14 @@ export class RallyTrack {
   private spectators: AnimatedSpectator[] = [];
   private disposed = false;
 
-  constructor(mode: GameMode, maxCountTarget: 5 | 10) {
+  constructor(mode: GameMode, maxCountTarget: 5 | 10, trackLength = 1950) {
+    this.length = trackLength;
     this.group = new THREE.Group();
     this.finishTrophy = new THREE.Group();
 
     this.buildTerrainAndRoad();
     this.buildStartGantry(12);
-    this.buildFinishArea(this.length - 40);
+    this.buildFinishArea(this.length - 44);
     this.buildScenicProps();
 
     if (mode === 'count-cruise') {
@@ -85,16 +86,26 @@ export class RallyTrack {
   }
 
   private computeTrackPoint(s: number, out: THREE.Vector3): number {
-    const x = Math.sin(s * 0.0085) * 34 + Math.sin(s * 0.019) * 14;
+    const x =
+      Math.sin(s * 0.0075) * 34 +
+      Math.sin(s * 0.017) * 14 +
+      Math.sin(s * 0.0032) * 18;
     let dipHeight = 0;
 
-    if (s >= 540 && s <= 680) {
-      const t = (s - 540) / 140;
+    const dipStart = this.length * 0.5;
+    const dipEnd = this.length * 0.64;
+    const dipSpan = Math.max(120, dipEnd - dipStart);
+
+    if (s >= dipStart && s <= dipEnd) {
+      const t = (s - dipStart) / dipSpan;
       // Smooth twin rollercoaster dips with zero slope at entry/exit
-      dipHeight = -5.8 * 0.5 * (1 - Math.cos(4 * Math.PI * t));
+      dipHeight = -6.2 * 0.5 * (1 - Math.cos(4 * Math.PI * t));
     }
 
-    const y = 58 - s * 0.048 + dipHeight;
+    const startY = Math.max(40, this.length * 0.046);
+    const endY = 4;
+    const progress = THREE.MathUtils.clamp(s / Math.max(1, this.length), -0.05, 1.05);
+    const y = THREE.MathUtils.lerp(startY, endY, progress) + dipHeight;
     const z = s;
     out.set(x, y, z);
     return dipHeight;
@@ -755,7 +766,7 @@ export class RallyTrack {
 
   private buildScenicProps(): void {
     // Pine trees, lollipop trees, windmills, crowd bleachers, and rainbow arches along the valley
-    for (let s = 30; s < this.length - 50; s += 24) {
+    for (let s = 30; s < this.length - 54; s += 24) {
       const sample = this.sampleAt(s);
       for (const side of [-1, 1]) {
         const dist = this.roadHalfWidth + 6.5 + ((s * 7 + (side > 0 ? 13 : 3)) % 14);
@@ -763,7 +774,9 @@ export class RallyTrack {
         pos.y += (dist - this.roadHalfWidth) * 0.08;
 
         if ((s + (side > 0 ? 12 : 0)) % 48 === 0) {
-          const tree = this.createLollipopTree(BLOB_COLORS[(s / 24 + (side > 0 ? 2 : 0)) % BLOB_COLORS.length | 0]);
+          const colorIdx =
+            Math.floor(s / 24 + (side > 0 ? 2 : 0)) % BLOB_COLORS.length;
+          const tree = this.createLollipopTree(BLOB_COLORS[colorIdx]);
           tree.position.copy(pos);
           this.group.add(tree);
         } else {
@@ -774,39 +787,59 @@ export class RallyTrack {
       }
     }
 
-    // Windmills on scenic hillsides
-    const windmillPositions = [
-      { s: 165, side: -1 },
-      { s: 370, side: 1 },
-      { s: 735, side: -1 },
-      { s: 960, side: 1 },
-    ];
-    for (const wm of windmillPositions) {
-      const sample = this.sampleAt(wm.s);
-      const pos = sample.position.clone().addScaledVector(sample.right, wm.side * (this.roadHalfWidth + 16));
+    // Windmills on scenic hillsides scaled proportionally to track length
+    const windmillCount = Math.max(4, Math.round(this.length / 320));
+    for (let i = 0; i < windmillCount; i++) {
+      const t = i / Math.max(1, windmillCount - 1);
+      const s = THREE.MathUtils.lerp(this.length * 0.13, this.length * 0.90, t);
+      const side = i % 2 === 0 ? -1 : 1;
+      const sample = this.sampleAt(s);
+      const pos = sample.position
+        .clone()
+        .addScaledVector(sample.right, side * (this.roadHalfWidth + 16));
       pos.y += 1.4;
       const mill = this.createWindmill();
       mill.position.copy(pos);
-      mill.rotation.y = wm.side === 1 ? -0.5 : 0.5;
+      mill.rotation.y = side === 1 ? -0.5 : 0.5;
       this.group.add(mill);
     }
 
     // Rainbow celebration arches over scenic track sections
-    const rainbowArches = [245, 790];
-    for (const rs of rainbowArches) {
+    const rainbowFractions =
+      this.length >= 2400
+        ? [0.18, 0.38, 0.72, 0.90]
+        : this.length >= 1500
+          ? [0.20, 0.42, 0.76]
+          : [0.22, 0.75];
+    for (const frac of rainbowFractions) {
+      const rs = this.length * frac;
       const sample = this.sampleAt(rs);
       const arch = this.createRainbowGateArch();
       this.orientToTrack(arch, sample);
       this.group.add(arch);
     }
 
-    // Mid-track cheering bleachers
-    const midBleachers = [
-      { s: 310, side: -1 },
-      { s: 710, side: 1 },
-    ];
-    for (const mb of midBleachers) {
-      const sample = this.sampleAt(mb.s);
+    // Mid-track cheering bleachers scaled proportionally to track length
+    const midBleacherSpecs =
+      this.length >= 2400
+        ? [
+            { f: 0.20, side: -1 },
+            { f: 0.41, side: 1 },
+            { f: 0.69, side: -1 },
+            { f: 0.89, side: 1 },
+          ]
+        : this.length >= 1500
+          ? [
+              { f: 0.24, side: -1 },
+              { f: 0.46, side: 1 },
+              { f: 0.74, side: -1 },
+            ]
+          : [
+              { f: 0.28, side: -1 },
+              { f: 0.72, side: 1 },
+            ];
+    for (const mb of midBleacherSpecs) {
+      const sample = this.sampleAt(this.length * mb.f);
       const container = new THREE.Group();
       this.orientToTrack(container, sample);
       const bleacher = this.createBleacherGroup(6);
@@ -963,10 +996,11 @@ export class RallyTrack {
   }
 
   private spawnBlobLine(count: number, startS: number, endS: number, waveAmp: number, phaseOffset: number): void {
+    const waveCycles = Math.max(5, Math.round((endS - startS) / 170));
     for (let i = 0; i < count; i++) {
       const t = i / Math.max(1, count - 1);
       const s = THREE.MathUtils.lerp(startS, endS, t);
-      const laneX = Math.sin(t * Math.PI * 5 + phaseOffset) * waveAmp;
+      const laneX = Math.sin(t * Math.PI * waveCycles + phaseOffset) * waveAmp;
       const color = BLOB_COLORS[i % BLOB_COLORS.length];
 
       const mesh = this.createNumberblobMesh(color, 0.95);
@@ -1037,14 +1071,16 @@ export class RallyTrack {
   }
 
   private buildCountCruiseFeatures(maxCountTarget: 5 | 10): void {
-    const startS = 90;
-    const endS = this.length - 90;
+    const startS = 110;
+    const endS = this.length - 120;
+    const gatePositions: number[] = [];
 
-    // 1. Counting Gates 1..maxCountTarget
+    // 1. Counting Gates 1..maxCountTarget evenly spaced along the track
     for (let i = 0; i < maxCountTarget; i++) {
       const num = (i + 1) as NumberblockId;
       const t = i / (maxCountTarget - 1);
       const s = THREE.MathUtils.lerp(startS, endS, t);
+      gatePositions.push(s);
       const id = `count-gate-${num}`;
 
       const feature: TrackFeature = {
@@ -1065,19 +1101,26 @@ export class RallyTrack {
       this.featureMeshes.set(id, gateMesh);
     }
 
-    // 2. 3 gentle Jump Ramps between gates
-    const rampPositions = [
-      { s: 255, laneX: -0.35 },
-      { s: 565, laneX: 0.0 },
-      { s: 825, laneX: 0.35 },
-    ];
-    rampPositions.forEach((rp, idx) => {
-      const id = `cruise-ramp-${idx + 1}`;
+    // 2. Playful Jump Ramps nestled cleanly between Counting Gates
+    const desiredRamps = this.length >= 2400 ? 7 : this.length >= 1500 ? 5 : 3;
+    const intervalCount = Math.max(1, gatePositions.length - 1);
+    const rampCount = Math.min(desiredRamps, intervalCount);
+    const laneSequence = [-0.35, 0.0, 0.35];
+
+    for (let i = 0; i < rampCount; i++) {
+      const gapIdx = Math.min(
+        intervalCount - 1,
+        Math.floor(((i + 0.5) * intervalCount) / rampCount)
+      );
+      const rampS = (gatePositions[gapIdx] + gatePositions[gapIdx + 1]) * 0.5;
+      const laneX = laneSequence[i % laneSequence.length];
+      const id = `cruise-ramp-${i + 1}`;
+
       const feature: TrackFeature = {
         id,
         type: 'ramp',
-        z: rp.s,
-        laneX: rp.laneX,
+        z: rampS,
+        laneX,
         value: 1,
         label: 'JUMP!',
         triggered: false,
@@ -1085,15 +1128,16 @@ export class RallyTrack {
       this.features.push(feature);
 
       const ramp = this.createJumpRampMesh();
-      const sample = this.sampleAt(rp.s);
+      const sample = this.sampleAt(rampS);
       this.orientToTrack(ramp, sample);
-      ramp.position.addScaledVector(sample.right, rp.laneX * this.roadHalfWidth);
+      ramp.position.addScaledVector(sample.right, laneX * this.roadHalfWidth);
       this.group.add(ramp);
       this.featureMeshes.set(id, ramp);
-    });
+    }
 
-    // 3. 28 cheerful bouncing Numberblobs in curved steering ribbons
-    this.spawnBlobLine(28, 55, this.length - 70, 0.55, 0.4);
+    // 3. Cheerful bouncing Numberblobs in curved steering ribbons scaled to track length
+    const blobCount = this.length >= 2400 ? 64 : this.length >= 1500 ? 46 : 28;
+    this.spawnBlobLine(blobCount, 60, this.length - 75, 0.55, 0.4);
   }
 
   private createCountingGateMesh(num: NumberblockId): THREE.Group {
@@ -1188,15 +1232,60 @@ export class RallyTrack {
   }
 
   private buildRallyMathFeatures(): void {
-    // Curated Numberblock Rally episode obstacles, boosts, Double-Dipper & Mud Puddle
-    const rocks: Array<{ s: number; laneX: number; value: number }> = [
-      { s: 120, laneX: -0.45, value: 1 },
-      { s: 235, laneX: 0.48, value: 2 },
-      { s: 385, laneX: -0.32, value: 1 },
-      { s: 495, laneX: 0.42, value: 2 },
-      { s: 735, laneX: -0.48, value: 3 },
-      { s: 865, laneX: 0.38, value: 2 },
+    const dipStart = this.length * 0.5;
+    const dipEnd = this.length * 0.64;
+    const dipSpan = Math.max(120, dipEnd - dipStart);
+    const dip1S = dipStart + dipSpan * 0.22;
+    const dip2S = dipStart + dipSpan * 0.72;
+    const mudS = this.length * 0.85;
+
+    // Episode Story Zone Arches (decorative landmarks guiding players into iconic zones)
+    const zoneArches: Array<{ s: number; title: string; accent: string }> = [
+      { s: this.length * 0.075, title: 'BOULDER PASS!', accent: '#FF8F00' },
+      { s: dipStart - 14, title: 'DOUBLE-DIPPER!', accent: '#FF5722' },
+      { s: mudS - 20, title: 'MUD PUDDLE!', accent: '#8D6E63' },
     ];
+    for (const za of zoneArches) {
+      const arch = this.createZoneBannerArch(za.title, za.accent);
+      const sample = this.sampleAt(za.s);
+      this.orientToTrack(arch, sample);
+      this.group.add(arch);
+    }
+
+    const isLong = this.length >= 2400;
+    const isMedium = !isLong && this.length >= 1500;
+
+    // Rocks (-1, -2, -3) scaled by race length
+    const rocks: Array<{ s: number; laneX: number; value: number }> = isLong
+      ? [
+          { s: this.length * 0.095, laneX: -0.45, value: 1 },
+          { s: this.length * 0.155, laneX: 0.46, value: 2 },
+          { s: this.length * 0.225, laneX: -0.38, value: 1 },
+          { s: this.length * 0.295, laneX: 0.44, value: 3 },
+          { s: this.length * 0.37, laneX: -0.32, value: 2 },
+          { s: this.length * 0.445, laneX: 0.4, value: 2 },
+          { s: this.length * 0.665, laneX: -0.48, value: 3 },
+          { s: this.length * 0.725, laneX: 0.42, value: 2 },
+          { s: this.length * 0.79, laneX: -0.36, value: 1 },
+          { s: this.length * 0.895, laneX: 0.44, value: 2 },
+          { s: this.length * 0.945, laneX: -0.38, value: 3 },
+        ]
+      : isMedium
+        ? [
+            { s: this.length * 0.1, laneX: -0.45, value: 1 },
+            { s: this.length * 0.19, laneX: 0.48, value: 2 },
+            { s: this.length * 0.31, laneX: -0.35, value: 1 },
+            { s: this.length * 0.42, laneX: 0.42, value: 2 },
+            { s: this.length * 0.68, laneX: -0.46, value: 3 },
+            { s: this.length * 0.78, laneX: 0.38, value: 2 },
+            { s: this.length * 0.91, laneX: -0.32, value: 1 },
+          ]
+        : [
+            { s: this.length * 0.11, laneX: -0.45, value: 1 },
+            { s: this.length * 0.23, laneX: 0.45, value: 2 },
+            { s: this.length * 0.4, laneX: -0.35, value: 2 },
+            { s: this.length * 0.72, laneX: 0.4, value: 3 },
+          ];
 
     rocks.forEach((rk, idx) => {
       const id = `rock-${idx + 1}`;
@@ -1218,14 +1307,33 @@ export class RallyTrack {
       this.featureMeshes.set(id, rockMesh);
     });
 
-    // Wooden Jump Ramps
-    const ramps: Array<{ s: number; laneX: number }> = [
-      { s: 175, laneX: 0.35 },
-      { s: 325, laneX: -0.35 },
-      { s: 560, laneX: 0.58 }, // Double-Dipper bypass ramp 1
-      { s: 630, laneX: -0.58 }, // Double-Dipper bypass ramp 2
-      { s: 810, laneX: 0.0 },
-    ];
+    // Wooden Jump Ramps (including Double-Dipper bypass ramps)
+    const ramps: Array<{ s: number; laneX: number }> = isLong
+      ? [
+          { s: this.length * 0.14, laneX: -0.35 },
+          { s: this.length * 0.245, laneX: 0.38 },
+          { s: this.length * 0.35, laneX: 0.32 },
+          { s: this.length * 0.47, laneX: -0.36 },
+          { s: dip1S, laneX: 0.58 },
+          { s: dip2S, laneX: -0.58 },
+          { s: this.length * 0.742, laneX: 0.0 },
+          { s: this.length * 0.81, laneX: 0.35 },
+          { s: this.length * 0.955, laneX: 0.0 },
+        ]
+      : isMedium
+        ? [
+            { s: this.length * 0.22, laneX: 0.35 },
+            { s: this.length * 0.46, laneX: -0.35 },
+            { s: dip1S, laneX: 0.58 },
+            { s: dip2S, laneX: -0.58 },
+            { s: this.length * 0.715, laneX: 0.0 },
+            { s: this.length * 0.94, laneX: 0.32 },
+          ]
+        : [
+            { s: this.length * 0.28, laneX: 0.35 },
+            { s: dip1S, laneX: 0.58 },
+            { s: dip2S, laneX: -0.58 },
+          ];
 
     ramps.forEach((rp, idx) => {
       const id = `rally-ramp-${idx + 1}`;
@@ -1247,14 +1355,34 @@ export class RallyTrack {
       this.featureMeshes.set(id, rampMesh);
     });
 
-    // Combine Boost Gates (+1, +2, +3)
-    const mergeGates: Array<{ s: number; laneX: number; value: number }> = [
-      { s: 285, laneX: 0.0, value: 1 },
-      { s: 445, laneX: -0.35, value: 2 },
-      { s: 700, laneX: 0.3, value: 2 },
-      { s: 895, laneX: -0.25, value: 3 },
-      { s: 990, laneX: 0.0, value: 1 },
-    ];
+    // Combine Boost Gates (+1, +2, +3) scaled by race length
+    const mergeGates: Array<{ s: number; laneX: number; value: number }> = isLong
+      ? [
+          { s: this.length * 0.125, laneX: 0.22, value: 1 },
+          { s: this.length * 0.19, laneX: -0.25, value: 2 },
+          { s: this.length * 0.26, laneX: 0.0, value: 3 },
+          { s: this.length * 0.335, laneX: -0.32, value: 1 },
+          { s: this.length * 0.41, laneX: 0.28, value: 2 },
+          { s: this.length * 0.695, laneX: 0.26, value: 2 },
+          { s: this.length * 0.76, laneX: -0.22, value: 3 },
+          { s: this.length * 0.88, laneX: -0.28, value: 1 },
+          { s: this.length * 0.925, laneX: 0.18, value: 2 },
+        ]
+      : isMedium
+        ? [
+            { s: this.length * 0.145, laneX: 0.25, value: 1 },
+            { s: this.length * 0.25, laneX: -0.25, value: 2 },
+            { s: this.length * 0.37, laneX: 0.0, value: 2 },
+            { s: this.length * 0.655, laneX: 0.3, value: 3 },
+            { s: this.length * 0.74, laneX: -0.25, value: 1 },
+            { s: this.length * 0.885, laneX: 0.2, value: 2 },
+          ]
+        : [
+            { s: this.length * 0.17, laneX: 0.0, value: 1 },
+            { s: this.length * 0.34, laneX: -0.3, value: 2 },
+            { s: this.length * 0.67, laneX: 0.28, value: 2 },
+            { s: this.length * 0.9, laneX: -0.2, value: 3 },
+          ];
 
     mergeGates.forEach((mg, idx) => {
       const id = `merge-gate-${idx + 1}`;
@@ -1276,8 +1404,8 @@ export class RallyTrack {
       this.featureMeshes.set(id, gateMesh);
     });
 
-    // Iconic Double-Dipper Twin Dip Gates (s = 560 and s = 630)
-    const dippers = [560, 630];
+    // Iconic Double-Dipper Twin Dip Gates (-3)
+    const dippers = [dip1S, dip2S];
     dippers.forEach((ds, idx) => {
       const id = `double-dipper-${idx + 1}`;
       this.features.push({
@@ -1297,25 +1425,100 @@ export class RallyTrack {
       this.featureMeshes.set(id, dipArch);
     });
 
-    // Mud Puddle splash zone near s = 940
+    // Mud Puddle splash zone (~0.85 * length) surrounded by cheering mini-Ones
     const mudId = 'mud-puddle-1';
     this.features.push({
       id: mudId,
       type: 'mud-puddle',
-      z: 940,
+      z: mudS,
       laneX: 0,
       value: 1,
       label: 'SPLASH!',
       triggered: false,
     });
     const mudMesh = this.createMudPuddleMesh();
-    const mudSample = this.sampleAt(940);
+    const mudSample = this.sampleAt(mudS);
     this.orientToTrack(mudMesh, mudSample);
     this.group.add(mudMesh);
     this.featureMeshes.set(mudId, mudMesh);
 
-    // 32 collectible Numberblobs in racing lines
-    this.spawnBlobLine(32, 60, this.length - 75, 0.68, 0.9);
+    // Collectible Numberblobs in racing lines scaled by race length
+    const blobCount = isLong ? 64 : isMedium ? 46 : 28;
+    this.spawnBlobLine(blobCount, 60, this.length - 75, 0.68, 0.9);
+  }
+
+  private createZoneBannerArch(title: string, accentHex: string): THREE.Group {
+    const g = new THREE.Group();
+    const postMat = new THREE.MeshStandardMaterial({
+      color: accentHex,
+      roughness: 0.32,
+    });
+    const whiteMat = new THREE.MeshStandardMaterial({
+      color: '#FFFFFF',
+      roughness: 0.3,
+    });
+    const goldMat = new THREE.MeshStandardMaterial({
+      color: '#FFD54F',
+      roughness: 0.25,
+      metalness: 0.35,
+    });
+
+    const span = this.roadHalfWidth + 0.7;
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.46, 0.6, 8.0, 14),
+        postMat
+      );
+      post.position.set(side * span, 4.0, 0);
+      post.castShadow = true;
+      g.add(post);
+
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 10), goldMat);
+      cap.position.set(side * span, 8.2, 0);
+      g.add(cap);
+    }
+
+    const crossbar = new THREE.Mesh(
+      new THREE.BoxGeometry(span * 2 + 1.0, 0.55, 0.55),
+      whiteMat
+    );
+    crossbar.position.set(0, 7.8, 0);
+    g.add(crossbar);
+
+    const signCanvas = document.createElement('canvas');
+    signCanvas.width = 512;
+    signCanvas.height = 144;
+    const ctx = signCanvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = accentHex;
+      ctx.fillRect(0, 0, 512, 144);
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 10;
+      ctx.strokeRect(8, 8, 496, 128);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = '900 46px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(title, 256, 74);
+    }
+    const signTex = new THREE.CanvasTexture(signCanvas);
+    signTex.colorSpace = THREE.SRGBColorSpace;
+    const signMat = new THREE.MeshBasicMaterial({
+      map: signTex,
+      side: THREE.FrontSide,
+    });
+    const signGeom = new THREE.PlaneGeometry(9.2, 2.6);
+
+    const frontBoard = new THREE.Mesh(signGeom, signMat);
+    frontBoard.rotation.y = Math.PI;
+    frontBoard.position.set(0, 9.2, -0.04);
+    g.add(frontBoard);
+
+    const backBoard = new THREE.Mesh(signGeom, signMat);
+    backBoard.position.set(0, 9.2, 0.04);
+    g.add(backBoard);
+
+    return g;
   }
 
   private createRockHazardMesh(subtractVal: number): THREE.Group {

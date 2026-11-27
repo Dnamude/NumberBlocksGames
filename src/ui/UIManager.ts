@@ -6,6 +6,7 @@ import {
 } from '../data/numberblocks';
 import { FAMILY_VOICE_SLOTS, FamilyVoiceSlot } from '../data/voiceManifest';
 import {
+  CarSpeedSetting,
   GameMode,
   GameScreen,
   HudState,
@@ -15,6 +16,7 @@ import {
   ParentSettings,
   PitStopQuestion,
   PodiumResult,
+  RaceLengthSetting,
 } from '../types/game';
 
 export interface UIHandlers {
@@ -266,6 +268,7 @@ export class UIManager {
   private hudMiniGrid!: HTMLElement;
   private hudRacerNum!: HTMLElement;
   private hudRacerName!: HTMLElement;
+  private hudRacerWheels!: HTMLElement;
   private hudBlobsValue!: HTMLElement;
   private hudCountTrack!: HTMLElement;
   private hudCountPips!: HTMLElement;
@@ -309,6 +312,8 @@ export class UIManager {
   private toggleFamilyVoice!: HTMLButtonElement;
   private toggleAutoSteer!: HTMLButtonElement;
   private togglePitStop!: HTMLButtonElement;
+  private segSpeedButtons = new Map<CarSpeedSetting, HTMLButtonElement>();
+  private segLengthButtons = new Map<RaceLengthSetting, HTMLButtonElement>();
   private segCount5!: HTMLButtonElement;
   private segCount10!: HTMLButtonElement;
 
@@ -642,10 +647,11 @@ export class UIManager {
     const left = el('div', 'nb-hud-left');
     const racerBadge = el('div', 'nb-card nb-racer-badge');
     this.hudMiniGrid = el('div', 'nb-mini-grid');
-    const racerMeta = el('div');
+    const racerMeta = el('div', 'nb-racer-badge-meta');
     this.hudRacerNum = el('div', 'nb-racer-badge-num', '4');
     this.hudRacerName = el('div', 'nb-racer-badge-name', 'Four');
-    racerMeta.append(this.hudRacerNum, this.hudRacerName);
+    this.hudRacerWheels = el('div', 'nb-racer-badge-wheels', '4 🛞');
+    racerMeta.append(this.hudRacerNum, this.hudRacerName, this.hudRacerWheels);
     racerBadge.append(this.hudMiniGrid, racerMeta);
 
     const blobsPill = el('div', 'nb-card nb-blobs-pill');
@@ -1000,6 +1006,56 @@ export class UIManager {
       'Fun counting stops mid-race',
       () => this.patchSetting({ pitStopQuizzes: !this.settings.pitStopQuizzes })
     );
+
+    // Car Speed: Slow | Normal | Fast
+    const speedRow = el('div', 'nb-setting-row');
+    const speedLabels = el('div', 'nb-setting-label-wrap');
+    speedLabels.append(
+      el('span', 'nb-setting-label', 'Car Speed'),
+      el('span', 'nb-setting-hint', 'Slower pace for counting & bumps')
+    );
+    const speedSegGroup = el('div', 'nb-segment-group nb-segment-group--3');
+    const speedOptions: Array<{ value: CarSpeedSetting; label: string }> = [
+      { value: 'slow', label: 'Slow' },
+      { value: 'normal', label: 'Normal' },
+      { value: 'fast', label: 'Fast' },
+    ];
+    for (const opt of speedOptions) {
+      const btn = el('button', 'nb-segment-btn', opt.label) as HTMLButtonElement;
+      btn.type = 'button';
+      this.listen(btn, 'click', () =>
+        this.patchSetting({ carSpeed: opt.value })
+      );
+      this.segSpeedButtons.set(opt.value, btn);
+      speedSegGroup.appendChild(btn);
+    }
+    speedRow.append(speedLabels, speedSegGroup);
+    drawer.appendChild(speedRow);
+
+    // Race Length: Short | Medium | Long
+    const lengthRow = el('div', 'nb-setting-row');
+    const lengthLabels = el('div', 'nb-setting-label-wrap');
+    lengthLabels.append(
+      el('span', 'nb-setting-label', 'Race Length'),
+      el('span', 'nb-setting-hint', 'Applies on next race')
+    );
+    const lengthSegGroup = el('div', 'nb-segment-group nb-segment-group--3');
+    const lengthOptions: Array<{ value: RaceLengthSetting; label: string }> = [
+      { value: 'short', label: 'Short' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'long', label: 'Long' },
+    ];
+    for (const opt of lengthOptions) {
+      const btn = el('button', 'nb-segment-btn', opt.label) as HTMLButtonElement;
+      btn.type = 'button';
+      this.listen(btn, 'click', () =>
+        this.patchSetting({ raceLength: opt.value })
+      );
+      this.segLengthButtons.set(opt.value, btn);
+      lengthSegGroup.appendChild(btn);
+    }
+    lengthRow.append(lengthLabels, lengthSegGroup);
+    drawer.appendChild(lengthRow);
 
     // Count Goal 1-5 vs 1-10
     const goalRow = el('div', 'nb-setting-row');
@@ -1435,7 +1491,7 @@ export class UIManager {
     this.garageNumBadge.style.borderColor = id === 10 ? '#E53935' : '#ffffff';
 
     this.garageNameEl.textContent = spec.name;
-    this.garageWheelPill.textContent = spec.wheelCountLabel;
+    this.garageWheelPill.textContent = spec.carStyleName;
     this.garageCatchphraseEl.textContent = spec.catchphrase;
 
     for (const [tileId, tile] of this.racerTiles.entries()) {
@@ -1473,6 +1529,7 @@ export class UIManager {
     renderMiniGrid(this.hudMiniGrid, hud.currentNumber);
     this.hudRacerNum.textContent = String(hud.currentNumber);
     this.hudRacerName.textContent = spec.name;
+    this.hudRacerWheels.textContent = `${hud.currentNumber} 🛞`;
     this.hudBlobsValue.textContent = String(hud.blobsCollected);
 
     const isCruise = hud.mode === 'count-cruise';
@@ -1544,11 +1601,11 @@ export class UIManager {
 
     this.hudMathEquation.replaceChildren();
     this.hudMathEquation.append(
-      this.createMathChip(event.left),
-      el('span', undefined, event.operator === '-' ? '−' : '+'),
-      this.createMathChip(event.right),
-      el('span', undefined, '='),
-      this.createMathChip(event.result)
+      this.createMathTermWithPips(event.left),
+      el('span', 'nb-math-op', event.operator === '-' ? '−' : '+'),
+      this.createMathTermWithPips(event.right),
+      el('span', 'nb-math-op', '='),
+      this.createMathTermWithPips(event.result)
     );
 
     this.hudMathBanner.style.borderColor = event.color;
@@ -1559,7 +1616,29 @@ export class UIManager {
     this.mathBannerTimer = window.setTimeout(() => {
       this.hudMathBanner.classList.remove('is-visible');
       this.mathBannerTimer = null;
-    }, 2400);
+    }, 2800);
+  }
+
+  private createMathTermWithPips(value: number): HTMLElement {
+    const term = el('div', 'nb-math-term');
+    const chip = this.createMathChip(value);
+    const pips = el('div', 'nb-math-pips');
+
+    const clamped = Math.max(1, Math.min(10, Math.round(value))) as NumberblockId;
+    const spec = NUMBERBLOCK_SPECS[clamped];
+    for (let i = 0; i < clamped; i += 1) {
+      const pip = el('span', 'nb-math-pip');
+      const block = spec.blocks[i];
+      const color = block ? block.color : spec.primaryColor;
+      pip.style.backgroundColor = color;
+      if (clamped === 10 || color.toLowerCase() === '#ffffff') {
+        pip.style.borderColor = '#E53935';
+      }
+      pips.appendChild(pip);
+    }
+
+    term.append(chip, pips);
+    return term;
   }
 
   private createMathChip(value: number): HTMLElement {
@@ -1707,6 +1786,13 @@ export class UIManager {
     this.setToggleState(this.toggleFamilyVoice, settings.useFamilyVoice);
     this.setToggleState(this.toggleAutoSteer, settings.autoSteerAssist);
     this.setToggleState(this.togglePitStop, settings.pitStopQuizzes);
+
+    for (const [speedVal, btn] of this.segSpeedButtons.entries()) {
+      btn.classList.toggle('is-active', settings.carSpeed === speedVal);
+    }
+    for (const [lenVal, btn] of this.segLengthButtons.entries()) {
+      btn.classList.toggle('is-active', settings.raceLength === lenVal);
+    }
 
     this.segCount5.classList.toggle('is-active', settings.maxCountTarget === 5);
     this.segCount10.classList.toggle(

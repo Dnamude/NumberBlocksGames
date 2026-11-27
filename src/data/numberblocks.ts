@@ -1,4 +1,10 @@
-import { NumberblockId, NumberblockSpec } from '../types/game';
+import {
+  CarSpeedSetting,
+  NumberblockId,
+  NumberblockSpec,
+  ParentSettings,
+  RaceLengthSetting,
+} from '../types/game';
 
 const RAINBOW_COLORS = [
   '#E53935', // 1 Red
@@ -19,12 +25,13 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
     kartColor: '#EF5350',
     kartStripeColor: '#FFFFFF',
     catchphrase: 'One! Only one can lift the trophy!',
-    rallyLine: 'Coming! Keep pedalling, One!',
+    rallyLine: 'Coming! Pedal, pedal, pedal!',
     columns: 1,
     rows: 1,
     blocks: [{ x: 0, y: 0, z: 0, color: '#E53935' }],
     accessory: 'none',
-    wheelCountLabel: '1 wheel power',
+    wheelCountLabel: '1 wheel',
+    carStyleName: '1-Wheel Red Unicycle',
     baseSpeed: 1.0,
   },
   2: {
@@ -43,7 +50,8 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 0, y: 1, z: 0, color: '#FB8C00' },
     ],
     accessory: 'glasses',
-    wheelCountLabel: '2 wheels spinning',
+    wheelCountLabel: '2 wheels',
+    carStyleName: '2-Wheel Tandem Bike',
     baseSpeed: 1.01,
   },
   3: {
@@ -63,7 +71,8 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 0, y: 2, z: 0, color: '#FDD835' },
     ],
     accessory: 'jester-hat',
-    wheelCountLabel: '3-wheel trike power',
+    wheelCountLabel: '3 wheels',
+    carStyleName: '3-Wheel Jester Trike',
     baseSpeed: 1.02,
   },
   4: {
@@ -84,8 +93,9 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 0.5, y: 1, z: 0, color: '#43A047' },
     ],
     accessory: 'square-brows',
-    wheelCountLabel: '4-wheel drive',
-    baseSpeed: 1.04,
+    wheelCountLabel: '4 wheels',
+    carStyleName: '4-Wheel Square Jeep',
+    baseSpeed: 1.03,
   },
   5: {
     id: 5,
@@ -106,7 +116,8 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 0, y: 4, z: 0, color: '#29B6F6' },
     ],
     accessory: 'star-eye',
-    wheelCountLabel: '5-star speed',
+    wheelCountLabel: '5 wheels',
+    carStyleName: '5-Wheel Star Cruiser',
     baseSpeed: 1.03,
   },
   6: {
@@ -117,7 +128,7 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
     kartColor: '#9575CD',
     kartStripeColor: '#FFFFFF',
     catchphrase: 'Six! Roll the dice, vroom vroom!',
-    rallyLine: 'Vroom, vroom! Let us roll!',
+    rallyLine: 'Vroom, vroom! High rollers!',
     columns: 2,
     rows: 3,
     blocks: [
@@ -129,7 +140,8 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 0.5, y: 2, z: 0, color: '#7E57C2', hasDiceDots: 6 },
     ],
     accessory: 'dice',
-    wheelCountLabel: '6 dice power',
+    wheelCountLabel: '6 wheels',
+    carStyleName: '6-Wheel Dice Roller',
     baseSpeed: 1.04,
   },
   7: {
@@ -150,8 +162,9 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       color,
     })),
     accessory: 'rainbow',
-    wheelCountLabel: '7 rainbow stripes',
-    baseSpeed: 1.05,
+    wheelCountLabel: '7 wheels',
+    carStyleName: '7-Wheel Rainbow Racer',
+    baseSpeed: 1.04,
   },
   8: {
     id: 8,
@@ -175,8 +188,9 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 0.5, y: 3, z: 0, color: '#EC407A' },
     ],
     accessory: 'octo-mask',
-    wheelCountLabel: '8 Octoblock legs',
-    baseSpeed: 1.06,
+    wheelCountLabel: '8 wheels',
+    carStyleName: '8-Wheel Octo-Racer',
+    baseSpeed: 1.05,
   },
   9: {
     id: 9,
@@ -201,8 +215,9 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 1, y: 2, z: 0, color: '#757575' },
     ],
     accessory: 'grey-square',
-    wheelCountLabel: '9 square power',
-    baseSpeed: 1.05,
+    wheelCountLabel: '9 wheels',
+    carStyleName: '9-Wheel Square Cruiser',
+    baseSpeed: 1.04,
   },
   10: {
     id: 10,
@@ -212,7 +227,7 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
     kartColor: '#E53935',
     kartStripeColor: '#FFFFFF',
     catchphrase: 'Ten! Blast off to the finish line!',
-    rallyLine: 'Ten is in the lead! Ten out of ten!',
+    rallyLine: 'Ten is in the lead! Ten wheels!',
     columns: 2,
     rows: 5,
     blocks: [
@@ -228,9 +243,28 @@ export const NUMBERBLOCK_SPECS: Record<NumberblockId, NumberblockSpec> = {
       { x: 0.5, y: 4, z: 0, color: '#FFFFFF', borderColor: '#E53935' },
     ],
     accessory: 'rocket-stars',
-    wheelCountLabel: '10 rocket wheels',
-    baseSpeed: 1.07,
+    wheelCountLabel: '10 wheels',
+    carStyleName: '10-Wheel Rocket Car',
+    baseSpeed: 1.06,
   },
+};
+
+export const CAR_SPEED_PRESETS: Record<
+  CarSpeedSetting,
+  { cruiseSpeed: number; rallySpeed: number; boostBonus: number; label: string }
+> = {
+  slow: { cruiseSpeed: 12.5, rallySpeed: 15.0, boostBonus: 7.0, label: 'Slow' },
+  normal: { cruiseSpeed: 17.5, rallySpeed: 20.5, boostBonus: 9.0, label: 'Normal' },
+  fast: { cruiseSpeed: 24.5, rallySpeed: 29.0, boostBonus: 11.5, label: 'Fast' },
+};
+
+export const RACE_LENGTH_PRESETS: Record<
+  RaceLengthSetting,
+  { trackLength: number; label: string }
+> = {
+  short: { trackLength: 1150, label: 'Short' },
+  medium: { trackLength: 1950, label: 'Medium' },
+  long: { trackLength: 2850, label: 'Long' },
 };
 
 export const NUMBER_WORDS: Record<NumberblockId, string> = {
@@ -251,15 +285,17 @@ export const ALL_NUMBERBLOCK_IDS: NumberblockId[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 
 export const EPISODE_COMMENTARY_LINES = [
   'Welcome to the Numberblock Rally! Ten riders, ten pedal-powered cars!',
   'Ready, steady, GO!',
-  'Look at them zoom down Mount Numberland!',
+  'Ten wheels minus one wheel equals nine wheels left!',
+  'Bump a friend to ADD blocks together!',
+  'Watch out for rocks — wheels can pop right off!',
   'Mind the Double-Dipper up ahead!',
   'Four-wheel drive! What a move!',
-  'Octoblock is racing through!',
-  'Nice day for it!',
+  'Octoblock coming through!',
+  'Nice day for it! Ah-CHOO!',
   'Only ONE can lift the golden trophy!',
 ];
 
-export const DEFAULT_PARENT_SETTINGS = {
+export const DEFAULT_PARENT_SETTINGS: ParentSettings = {
   musicEnabled: true,
   sfxEnabled: true,
   voiceEnabled: true,
@@ -267,4 +303,6 @@ export const DEFAULT_PARENT_SETTINGS = {
   autoSteerAssist: true,
   maxCountTarget: 10 as 5 | 10,
   pitStopQuizzes: true,
+  carSpeed: 'normal',
+  raceLength: 'medium',
 };
