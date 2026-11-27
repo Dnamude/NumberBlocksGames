@@ -38,8 +38,8 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Major Three (Commentator)',
     geminiPrebuiltVoice: 'Puck',
     geminiDesignPrompt:
-      'Theatrical, bubbly, high-energy young British animated circus ringmaster and sports commentator, bright cheerful timbre, playful CBeebies storybook charm.',
-    actingStyle: 'excited, bouncy British sports announcer for young children',
+      'Theatrical, bubbly, high-energy British animation voice actress performing a cheerful circus ringmaster and upbeat sports commentator, bright lively timbre, crisp storybook charm.',
+    actingStyle: 'excited, bouncy British sports announcer',
     webSpeechPitch: 1.24,
     webSpeechRate: 1.0,
   },
@@ -48,8 +48,8 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'One',
     geminiPrebuiltVoice: 'Leda',
     geminiDesignPrompt:
-      'Tiny, squeaky, adorable, super-cheerful young British childlike cartoon voice, curious and sparkling with joy.',
-    actingStyle: 'bubbly, tiny, delighted young British voice',
+      'High-pitched, bubbly, bright-voiced British animation actress performing a cheerful whimsical sprite mascot, energetic, warm, and sparkling with joy.',
+    actingStyle: 'bubbly, high-pitched, delighted British animation mascot',
     webSpeechPitch: 1.48,
     webSpeechRate: 1.02,
   },
@@ -58,7 +58,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Two',
     geminiPrebuiltVoice: 'Puck',
     geminiDesignPrompt:
-      'Upbeat, bouncy, slightly quirky young British cartoon voice with musical rhythm like a cheerful tap dancer.',
+      'Upbeat, bouncy, slightly quirky British male animation voice actor performing a cheerful musical tap-dancing character with playful rhythm.',
     actingStyle: 'cheerful, rhythmic, playful British voice',
     webSpeechPitch: 1.28,
     webSpeechRate: 1.0,
@@ -68,7 +68,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Three',
     geminiPrebuiltVoice: 'Zephyr',
     geminiDesignPrompt:
-      'Show-off, theatrical, bouncy British cartoon voice with bright joyful energy and cheeky pride.',
+      'Theatrical, lively, bouncy British female animation voice actor performing a cheeky, proud stage juggler with bright joyful energy.',
     actingStyle: 'theatrical, cheeky, proud British cartoon performer',
     webSpeechPitch: 1.32,
     webSpeechRate: 1.02,
@@ -78,7 +78,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Four',
     geminiPrebuiltVoice: 'Achird',
     geminiDesignPrompt:
-      'Warm, friendly, steady young British cartoon buddy voice, enthusiastic and dependable with gentle cheer.',
+      'Warm, friendly, steady British male animation voice actor performing an enthusiastic, dependable buddy character with gentle good cheer.',
     actingStyle: 'warm, sturdy, friendly British cartoon buddy',
     webSpeechPitch: 1.06,
     webSpeechRate: 0.96,
@@ -88,7 +88,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Five',
     geminiPrebuiltVoice: 'Aoede',
     geminiDesignPrompt:
-      'Confident, bright, musical British cartoon pop-star voice, cool and encouraging.',
+      'Confident, bright, musical British female animation voice actor performing an upbeat pop-star character, cool, warm, and encouraging.',
     actingStyle: 'bright, musical, upbeat pop-star energy',
     webSpeechPitch: 1.18,
     webSpeechRate: 0.99,
@@ -98,7 +98,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Six',
     geminiPrebuiltVoice: 'Kore',
     geminiDesignPrompt:
-      'Playful, cheeky, game-loving British cartoon voice with sparkling rhythm and fun energy.',
+      'Playful, expressive British female animation voice actor performing a witty, game-loving character with jazzy rhythm and sparkling energy.',
     actingStyle: 'playful, jazzy, game-loving British charm',
     webSpeechPitch: 1.22,
     webSpeechRate: 1.01,
@@ -108,7 +108,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Seven',
     geminiPrebuiltVoice: 'Vindemiatrix',
     geminiDesignPrompt:
-      'Sunny, breezy, optimistic British cartoon voice full of rainbow wonder and lighthearted cheer.',
+      'Sunny, breezy, optimistic British male animation voice actor performing a cheerful lucky adventurer full of rainbow wonder and lighthearted warmth.',
     actingStyle: 'sunny, cheerful, breezy British voice',
     webSpeechPitch: 1.16,
     webSpeechRate: 0.98,
@@ -118,7 +118,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Eight (Octoblock)',
     geminiPrebuiltVoice: 'Fenrir',
     geminiDesignPrompt:
-      'Heroic, booming, friendly animated British superhero voice, bold and theatrical yet warm for toddlers.',
+      'Heroic, booming, friendly British baritone animation voice actor performing a bold, theatrical animated superhero with warm comedic flair.',
     actingStyle: 'heroic, booming, joyful cartoon superhero',
     webSpeechPitch: 0.86,
     webSpeechRate: 0.95,
@@ -128,7 +128,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Nine',
     geminiPrebuiltVoice: 'Charon',
     geminiDesignPrompt:
-      'Calm, gentle, slightly stuffy-nosed British cartoon gentle-giant voice, relaxed and humorous.',
+      'Calm, gentle, slightly nasal British male animation voice actor performing a relaxed, good-natured gentle giant with dry comedic warmth.',
     actingStyle: 'calm, gentle, slightly stuffy British tone',
     webSpeechPitch: 0.92,
     webSpeechRate: 0.92,
@@ -138,7 +138,7 @@ export const CHARACTER_VOICE_PROFILES: Record<VoiceSpeakerId, CharacterVoiceProf
     label: 'Ten',
     geminiPrebuiltVoice: 'Callirrhoe',
     geminiDesignPrompt:
-      'Energetic, bright, courageous British cartoon rocket-captain voice, triumphant and inspiring.',
+      'Energetic, bright, courageous British female animation voice actor performing an adventurous rocket-captain hero, triumphant and inspiring.',
     actingStyle: 'energetic, heroic, bright rocket captain',
     webSpeechPitch: 1.12,
     webSpeechRate: 1.0,
