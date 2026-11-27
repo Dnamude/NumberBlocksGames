@@ -31,3 +31,19 @@ npm run dev
 ```bash
 npm run build
 ```
+
+## Studio Voice Pack (Gemini 3.8 Flash TTS) & Family Voice Recorder
+
+The game ships with a **3-tier voice engine**:
+1. **Family Voice Studio (Built-in, zero setup):** Open **⚙️ Parent Settings → Family Voice Studio 🎙️** on your iPad or laptop to record your own `"One!"`–`"Ten!"`, `"GO!"`, and `"Hooray!"` cheers (stored privately in IndexedDB).
+2. **Gemini 3.8 Flash TTS Character Voice Pack (Optional build-time generator):** Pre-generate all 41 expressive British cartoon voice lines (10 distinct Numberblock personas + Major Three's rally commentary + episode equations) into `public/audio/voices/` with zero runtime API keys:
+   ```bash
+   # Fast mode using curated Gemini 3.8 studio voices + acting style directions:
+   GEMINI_API_KEY=your_key npm run generate:voices
+
+   # Or design custom British cartoon personas for all 10 characters via Voice Design:
+   GEMINI_API_KEY=your_key npm run generate:voices -- --design-voices
+   ```
+   The script is resumable, automatically compresses to `.mp3` if `ffmpeg` is installed, and updates `public/audio/voices/manifest.json` so the game picks up the clips automatically on the next deploy.
+3. **Expressive Per-Character Web Speech Fallback:** Automatically selects a British English voice when available and applies distinct character pitch/rate profiles.
+

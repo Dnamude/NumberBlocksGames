@@ -1,7 +1,20 @@
 import { NUMBER_WORDS } from '../data/numberblocks';
+import {
+  CHARACTER_VOICE_PROFILES,
+  GeneratedVoiceManifest,
+  VoiceSpeakerId,
+  getEquationClipId,
+} from '../data/voiceManifest';
 import { NumberblockId, ParentSettings } from '../types/game';
+import { FamilyVoiceStore } from './FamilyVoiceStore';
 
 export type MusicMode = 'menu' | 'race' | 'podium';
+
+export interface VoicePackStatus {
+  geminiClipsLoaded: number;
+  familyClipsCount: number;
+  activeTier: 'family' | 'gemini' | 'webspeech';
+}
 
 interface StepNote {
   lead?: number;
@@ -24,7 +37,7 @@ const C_MAJOR_SCALE_HZ: readonly number[] = [
   659.25, // 3: E5
   698.46, // 4: F5
   783.99, // 5: G5
-  880.0,  // 6: A5
+  880.0, // 6: A5
   987.77, // 7: B5
   1046.5, // 8: C6
   1174.66, // 9: D6
@@ -38,10 +51,33 @@ function midiToHz(midi: number): number {
 
 // Note constants (MIDI)
 const N = {
-  C3: 48, D3: 50, E3: 52, F3: 53, G3: 55, A3: 57, Bb3: 58, B3: 59,
-  C4: 60, D4: 62, E4: 64, F4: 65, G4: 67, A4: 69, Bb4: 70, B4: 71,
-  C5: 72, D5: 74, E5: 76, F5: 77, G5: 79, A5: 81, B5: 83,
-  C6: 84, D6: 86, E6: 88, G6: 91,
+  C3: 48,
+  D3: 50,
+  E3: 52,
+  F3: 53,
+  G3: 55,
+  A3: 57,
+  Bb3: 58,
+  B3: 59,
+  C4: 60,
+  D4: 62,
+  E4: 64,
+  F4: 65,
+  G4: 67,
+  A4: 69,
+  Bb4: 70,
+  B4: 71,
+  C5: 72,
+  D5: 74,
+  E5: 76,
+  F5: 77,
+  G5: 79,
+  A5: 81,
+  B5: 83,
+  C6: 84,
+  D6: 86,
+  E6: 88,
+  G6: 91,
 } as const;
 
 const MENU_PATTERN: MusicPattern = {
@@ -179,21 +215,48 @@ const PATTERNS: Record<MusicMode, MusicPattern> = {
   podium: PODIUM_PATTERN,
 };
 
+interface KartMotionRig {
+  purrOsc: OscillatorNode;
+  purrFilter: BiquadFilterNode;
+  purrGain: GainNode;
+  chugLfo: OscillatorNode;
+  chugDepth: GainNode;
+  boostOscA: OscillatorNode;
+  boostOscB: OscillatorNode;
+  boostFilter: BiquadFilterNode;
+  boostGain: GainNode;
+}
+
 export class SoundEngine {
   private settings: ParentSettings;
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private musicBus: GainNode | null = null;
   private sfxBus: GainNode | null = null;
+  private voiceBus: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
 
   private musicTimerId: number | null = null;
   private musicSessionGain: GainNode | null = null;
   private currentMusicMode: MusicMode = 'menu';
   private musicShouldPlay = false;
+  private finalStretchActive = false;
   private nextStepTime = 0;
   private currentStepIndex = 0;
   private musicSessionCounter = 0;
+
+  // Continuous pedal-kart motion synth
+  private kartRig: KartMotionRig | null = null;
+
+  // 3-Tier Voice Pipeline state
+  private readonly familyStore = new FamilyVoiceStore();
+  private geminiBuffers = new Map<string, AudioBuffer>();
+  private geminiRawClips = new Map<string, ArrayBuffer>();
+  private familyBuffers = new Map<string, AudioBuffer>();
+  private familyBlobs = new Map<string, Blob>();
+  private manifestLoadStarted = false;
+  private manifestDecodeInFlight = false;
+  private activeVoiceSources = new Set<AudioBufferSourceNode>();
 
   private preferredVoice: SpeechSynthesisVoice | null = null;
   private voicesBound = false;
@@ -206,6 +269,8 @@ export class SoundEngine {
   constructor(settings: ParentSettings) {
     this.settings = { ...settings };
     this.bindSpeechVoices();
+    void this.preloadVoiceManifest();
+    void this.reloadFamilyVoices();
   }
 
   public unlock(): void {
@@ -216,6 +281,8 @@ export class SoundEngine {
 
     const onReady = (): void => {
       if (this.disposed) return;
+      void this.preloadVoiceManifest();
+      void this.decodePendingBuffers();
       if (this.musicShouldPlay && this.settings.musicEnabled && this.musicTimerId === null) {
         this.beginScheduler(this.currentMusicMode);
       }
@@ -249,7 +316,12 @@ export class SoundEngine {
       this.startMusic(this.currentMusicMode);
     }
 
+    if (!settings.sfxEnabled) {
+      this.silenceKartMotion();
+    }
+
     if (!settings.voiceEnabled && prevVoice) {
+      this.stopActiveVoiceBuffers();
       this.cancelSpeech();
     }
   }
@@ -258,6 +330,9 @@ export class SoundEngine {
     if (this.disposed) return;
 
     const modeChanged = this.currentMusicMode !== mode;
+    if (modeChanged) {
+      this.finalStretchActive = false;
+    }
     this.currentMusicMode = mode;
     this.musicShouldPlay = true;
 
@@ -275,7 +350,6 @@ export class SoundEngine {
     if (!ctx) return;
 
     if (ctx.state === 'suspended') {
-      // Attempt resume; if still suspended, unlock() will start scheduler on first gesture
       ctx
         .resume()
         .then(() => {
@@ -294,7 +368,76 @@ export class SoundEngine {
 
   public stopMusic(): void {
     this.musicShouldPlay = false;
+    this.finalStretchActive = false;
     this.teardownScheduler();
+  }
+
+  public setFinalStretch(active: boolean): void {
+    if (this.disposed) return;
+    if (this.finalStretchActive === active) return;
+    this.finalStretchActive = active;
+
+    if (
+      active &&
+      this.currentMusicMode === 'race' &&
+      this.musicShouldPlay &&
+      this.settings.musicEnabled
+    ) {
+      const ctx = this.getReadyContext();
+      if (ctx && this.musicBus) {
+        this.playFinalStretchStinger(ctx, this.musicBus);
+      }
+    }
+  }
+
+  public updateKartMotion(
+    speedRatio: number,
+    isAirborne: boolean,
+    isBoosting: boolean
+  ): void {
+    if (this.disposed) return;
+    if (!this.settings.sfxEnabled) {
+      this.silenceKartMotion();
+      return;
+    }
+
+    const ctx = this.ctx;
+    if (!ctx || !this.sfxBus || ctx.state !== 'running') {
+      return;
+    }
+
+    const rig = this.ensureKartMotionRig(ctx, this.sfxBus);
+    const now = ctx.currentTime;
+    const clampedSpeed = Math.max(0, Math.min(1.35, speedRatio));
+    const activeOnGround = clampedSpeed >= 0.05 && !isAirborne;
+
+    if (!activeOnGround) {
+      rig.purrGain.gain.setTargetAtTime(0, now, 0.055);
+      rig.boostGain.gain.setTargetAtTime(0, now, 0.055);
+      return;
+    }
+
+    // Cozy pedal-kart wheel purr + gentle pedal chug cadence
+    const baseFreq = 46 + clampedSpeed * 44 + (isBoosting ? 18 : 0);
+    const chugHz = 5.5 + clampedSpeed * 8.5 + (isBoosting ? 3.0 : 0);
+    const filterHz = 180 + clampedSpeed * 260 + (isBoosting ? 140 : 0);
+    const targetPurr = 0.022 + Math.min(1, clampedSpeed) * 0.038;
+
+    rig.purrOsc.frequency.setTargetAtTime(baseFreq, now, 0.06);
+    rig.chugLfo.frequency.setTargetAtTime(chugHz, now, 0.06);
+    rig.purrFilter.frequency.setTargetAtTime(filterHz, now, 0.06);
+    rig.purrGain.gain.setTargetAtTime(targetPurr, now, 0.06);
+
+    // Sparkling rainbow shimmer when boosting
+    if (isBoosting) {
+      const shimmerRoot = 523.25 + clampedSpeed * 130;
+      rig.boostOscA.frequency.setTargetAtTime(shimmerRoot, now, 0.07);
+      rig.boostOscB.frequency.setTargetAtTime(shimmerRoot * 1.498, now, 0.07);
+      rig.boostFilter.frequency.setTargetAtTime(1600 + clampedSpeed * 900, now, 0.07);
+      rig.boostGain.gain.setTargetAtTime(0.036, now, 0.06);
+    } else {
+      rig.boostGain.gain.setTargetAtTime(0, now, 0.06);
+    }
   }
 
   public playCountNote(num: number): void {
@@ -306,7 +449,10 @@ export class SoundEngine {
     const freq = C_MAJOR_SCALE_HZ[clamped - 1] ?? C_MAJOR_SCALE_HZ[0];
     const now = ctx.currentTime;
 
-    this.playGlockenspielNote(ctx, this.sfxBus, freq, now, 0.38, 0.34);
+    // Warm marimba body + magical celesta shimmer harmonics
+    this.playMarimbaNote(ctx, this.sfxBus, freq, now, 0.42, 0.28);
+    this.playGlockenspielNote(ctx, this.sfxBus, freq * 2, now + 0.008, 0.38, 0.16);
+    this.playGlockenspielNote(ctx, this.sfxBus, freq * 1.5, now + 0.014, 0.28, 0.08);
   }
 
   public playJump(): void {
@@ -459,6 +605,169 @@ export class SoundEngine {
     arp.forEach((hz, i) => {
       const t = now + i * 0.052;
       this.playGlockenspielNote(ctx, this.sfxBus!, hz, t, 0.42, 0.18);
+    });
+  }
+
+  public playMudSplash(): void {
+    if (this.disposed || !this.settings.sfxEnabled) return;
+    const ctx = this.getReadyContext();
+    if (!ctx || !this.sfxBus) return;
+
+    const now = ctx.currentTime;
+
+    // 1. Squishy comical lowpass noise splat
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getNoiseBuffer(ctx);
+    noise.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.Q.setValueAtTime(3.2, now);
+    filter.frequency.setValueAtTime(1600, now);
+    filter.frequency.exponentialRampToValueAtTime(240, now + 0.24);
+
+    const splatGain = ctx.createGain();
+    splatGain.gain.setValueAtTime(0.001, now);
+    splatGain.gain.linearRampToValueAtTime(0.3, now + 0.015);
+    splatGain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+
+    noise.connect(filter);
+    filter.connect(splatGain);
+    splatGain.connect(this.sfxBus);
+    noise.start(now);
+    noise.stop(now + 0.28);
+
+    // 2. Three bubbly rising sine bloop pops
+    const bloops = [
+      { delay: 0.03, f0: 210, f1: 480, dur: 0.09 },
+      { delay: 0.1, f0: 270, f1: 620, dur: 0.09 },
+      { delay: 0.17, f0: 340, f1: 790, dur: 0.1 },
+    ];
+    bloops.forEach((b) => {
+      const t = now + b.delay;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(b.f0, t);
+      osc.frequency.exponentialRampToValueAtTime(b.f1, t + b.dur);
+
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.2, t + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + b.dur + 0.015);
+
+      osc.connect(gain);
+      gain.connect(this.sfxBus!);
+      osc.start(t);
+      osc.stop(t + b.dur + 0.03);
+    });
+  }
+
+  public playCrowdCheer(): void {
+    if (this.disposed || !this.settings.sfxEnabled) return;
+    const ctx = this.getReadyContext();
+    if (!ctx || !this.sfxBus) return;
+
+    const now = ctx.currentTime;
+
+    // 1. Warm bandpass-filtered stadium applause swell
+    const applause = ctx.createBufferSource();
+    applause.buffer = this.getNoiseBuffer(ctx);
+    applause.loop = true;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(1450, now);
+    bp.Q.setValueAtTime(0.85, now);
+
+    const warmth = ctx.createBiquadFilter();
+    warmth.type = 'lowpass';
+    warmth.frequency.setValueAtTime(3600, now);
+
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.001, now);
+    env.gain.linearRampToValueAtTime(0.22, now + 0.18);
+    env.gain.setValueAtTime(0.2, now + 0.55);
+    env.gain.exponentialRampToValueAtTime(0.001, now + 1.15);
+
+    applause.connect(bp);
+    bp.connect(warmth);
+    warmth.connect(env);
+    env.connect(this.sfxBus);
+    applause.start(now);
+    applause.stop(now + 1.18);
+
+    // 2. Joyful celebration whistle & chime sparkle
+    const whistle = ctx.createOscillator();
+    const wGain = ctx.createGain();
+    whistle.type = 'sine';
+    whistle.frequency.setValueAtTime(780, now + 0.08);
+    whistle.frequency.exponentialRampToValueAtTime(1560, now + 0.28);
+    whistle.frequency.exponentialRampToValueAtTime(1320, now + 0.36);
+
+    wGain.gain.setValueAtTime(0.001, now + 0.08);
+    wGain.gain.linearRampToValueAtTime(0.11, now + 0.13);
+    wGain.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+
+    whistle.connect(wGain);
+    wGain.connect(this.sfxBus);
+    whistle.start(now + 0.08);
+    whistle.stop(now + 0.44);
+
+    const chimes = [1046.5, 1318.51, 1567.98];
+    chimes.forEach((hz, idx) => {
+      this.playGlockenspielNote(ctx, this.sfxBus!, hz, now + 0.14 + idx * 0.075, 0.35, 0.14);
+    });
+  }
+
+  public playRampLaunch(): void {
+    if (this.disposed || !this.settings.sfxEnabled) return;
+    const ctx = this.getReadyContext();
+    if (!ctx || !this.sfxBus) return;
+
+    const now = ctx.currentTime;
+
+    // 1. Chunky wooden plank thump
+    const thump = ctx.createOscillator();
+    const thumpGain = ctx.createGain();
+    thump.type = 'triangle';
+    thump.frequency.setValueAtTime(175, now);
+    thump.frequency.exponentialRampToValueAtTime(58, now + 0.11);
+
+    thumpGain.gain.setValueAtTime(0.001, now);
+    thumpGain.gain.linearRampToValueAtTime(0.32, now + 0.008);
+    thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+
+    thump.connect(thumpGain);
+    thumpGain.connect(this.sfxBus);
+    thump.start(now);
+    thump.stop(now + 0.15);
+
+    // 2. Soaring upward whoosh
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getNoiseBuffer(ctx);
+    noise.loop = true;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.setValueAtTime(2.0, now);
+    bp.frequency.setValueAtTime(320, now + 0.02);
+    bp.frequency.exponentialRampToValueAtTime(2900, now + 0.36);
+
+    const whooshGain = ctx.createGain();
+    whooshGain.gain.setValueAtTime(0.001, now + 0.02);
+    whooshGain.gain.linearRampToValueAtTime(0.2, now + 0.08);
+    whooshGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+
+    noise.connect(bp);
+    bp.connect(whooshGain);
+    whooshGain.connect(this.sfxBus);
+    noise.start(now + 0.02);
+    noise.stop(now + 0.42);
+
+    // 3. Sparkle launch chime
+    const sparkle = [783.99, 987.77, 1174.66, 1567.98];
+    sparkle.forEach((hz, idx) => {
+      this.playGlockenspielNote(ctx, this.sfxBus!, hz, now + 0.04 + idx * 0.045, 0.3, 0.15);
     });
   }
 
@@ -635,44 +944,101 @@ export class SoundEngine {
     squeak.stop(chooTime + 0.22);
   }
 
-  public speak(text: string, priority: 'high' | 'normal' = 'normal'): void {
-    if (this.disposed || !this.settings.voiceEnabled) return;
-    if (!text.trim()) return;
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    if (typeof SpeechSynthesisUtterance === 'undefined') return;
+  // =========================================================================
+  // 3-Tier Voice Pipeline
+  // =========================================================================
 
+  public async reloadFamilyVoices(): Promise<void> {
+    if (this.disposed) return;
     try {
-      const synth = window.speechSynthesis;
-      if (priority === 'high') {
-        synth.cancel();
-      }
+      const blobs = await this.familyStore.loadAllBlobs();
+      if (this.disposed) return;
 
-      if (!this.preferredVoice) {
-        this.selectPreferredVoice();
-      }
+      this.familyBlobs = blobs;
+      this.familyBuffers.clear();
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      if (this.preferredVoice) {
-        utterance.voice = this.preferredVoice;
-        utterance.lang = this.preferredVoice.lang;
-      } else {
-        utterance.lang = 'en-US';
+      if (this.ctx) {
+        await this.decodeFamilyBlobs(this.ctx);
       }
-      utterance.rate = 0.95;
-      utterance.pitch = 1.12;
-      utterance.volume = 0.95;
-
-      synth.speak(utterance);
     } catch {
-      // Never throw if speechSynthesis is blocked or unavailable
+      // Never throw on storage/decode errors
     }
   }
 
-  public speakNumber(num: number): void {
+  public getVoicePackStatus(): VoicePackStatus {
+    const familyClipsCount = Math.max(this.familyBuffers.size, this.familyBlobs.size);
+    const geminiClipsLoaded = Math.max(this.geminiBuffers.size, this.geminiRawClips.size);
+
+    let activeTier: VoicePackStatus['activeTier'] = 'webspeech';
+    if (this.settings.useFamilyVoice && familyClipsCount > 0) {
+      activeTier = 'family';
+    } else if (geminiClipsLoaded > 0) {
+      activeTier = 'gemini';
+    }
+
+    return {
+      geminiClipsLoaded,
+      familyClipsCount,
+      activeTier,
+    };
+  }
+
+  public playClip(
+    clipId: string,
+    fallbackText?: string,
+    speaker: VoiceSpeakerId = 'announcer',
+    priority: 'high' | 'normal' = 'normal'
+  ): void {
+    if (this.disposed || !this.settings.voiceEnabled) return;
+
+    const familyBuf = this.settings.useFamilyVoice
+      ? this.familyBuffers.get(clipId)
+      : undefined;
+    if (familyBuf) {
+      this.playVoiceBufferSequence([familyBuf], priority);
+      return;
+    }
+
+    const geminiBuf = this.geminiBuffers.get(clipId);
+    if (geminiBuf) {
+      this.playVoiceBufferSequence([geminiBuf], priority);
+      return;
+    }
+
+    if (fallbackText && fallbackText.trim()) {
+      this.speakWithCharacterProfile(speaker, fallbackText, priority);
+    }
+  }
+
+  public speakCharacter(
+    speaker: VoiceSpeakerId,
+    text: string,
+    clipId?: string,
+    priority: 'high' | 'normal' = 'normal'
+  ): void {
+    if (this.disposed || !this.settings.voiceEnabled) return;
+    if (clipId) {
+      this.playClip(clipId, text, speaker, priority);
+      return;
+    }
+    this.speakWithCharacterProfile(speaker, text, priority);
+  }
+
+  public speak(text: string, priority: 'high' | 'normal' = 'normal'): void {
+    if (this.disposed || !this.settings.voiceEnabled) return;
+    this.speakWithCharacterProfile('announcer', text, priority);
+  }
+
+  public speakNumber(num: number, speaker?: VoiceSpeakerId): void {
     if (this.disposed) return;
-    this.playCountNote(num);
-    const word = this.numberToWord(num);
-    this.speak(word, 'high');
+    const clamped = Math.max(1, Math.min(10, Math.round(num))) as NumberblockId;
+    this.playCountNote(clamped);
+    this.playClip(
+      `num_${clamped}`,
+      `${NUMBER_WORDS[clamped]}!`,
+      speaker ?? clamped,
+      'high'
+    );
   }
 
   public speakEquation(
@@ -681,21 +1047,72 @@ export class SoundEngine {
     right: number,
     result: number
   ): void {
-    if (this.disposed) return;
+    if (this.disposed || !this.settings.voiceEnabled) return;
+
+    // 1. Check iconic hero equation clip in Gemini/Family cache
+    const heroClipId = getEquationClipId(left, op, right, result);
+    const familyHero = this.settings.useFamilyVoice
+      ? this.familyBuffers.get(heroClipId)
+      : undefined;
+    const heroBuf = familyHero ?? this.geminiBuffers.get(heroClipId);
+    if (heroBuf) {
+      this.playVoiceBufferSequence([heroBuf], 'high');
+      return;
+    }
+
+    // 2. Check modular stitched clips (num_L + op + num_R + equals + num_Result)
+    const opClipId = op === '+' ? 'op_plus' : 'op_minus';
+    const modularIds = [
+      `num_${Math.round(left)}`,
+      opClipId,
+      `num_${Math.round(right)}`,
+      'op_equals',
+      `num_${Math.round(result)}`,
+    ];
+    const resolvedModular: AudioBuffer[] = [];
+    for (const id of modularIds) {
+      const buf =
+        (this.settings.useFamilyVoice ? this.familyBuffers.get(id) : undefined) ??
+        this.geminiBuffers.get(id);
+      if (!buf) {
+        resolvedModular.length = 0;
+        break;
+      }
+      resolvedModular.push(buf);
+    }
+
+    if (resolvedModular.length === modularIds.length) {
+      this.playVoiceBufferSequence(resolvedModular, 'high', 0.06);
+      return;
+    }
+
+    // 3. Cheerful announcer Web Speech fallback
     const leftWord = this.numberToWord(left);
     const rightWord = this.numberToWord(right);
     const resultWord = this.numberToWord(result);
     const opWord = op === '+' ? 'plus' : 'minus';
-    this.speak(`${leftWord} ${opWord} ${rightWord} equals ${resultWord}!`, 'high');
+    this.speakWithCharacterProfile(
+      'announcer',
+      `${leftWord} ${opWord} ${rightWord} equals ${resultWord}!`,
+      'high'
+    );
   }
 
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.musicShouldPlay = false;
+    this.finalStretchActive = false;
     this.teardownScheduler();
+    this.teardownKartMotionRig();
+    this.stopActiveVoiceBuffers();
     this.cancelSpeech();
     this.unbindSpeechVoices();
+
+    this.geminiBuffers.clear();
+    this.geminiRawClips.clear();
+    this.familyBuffers.clear();
+    this.familyBlobs.clear();
 
     if (this.ctx) {
       try {
@@ -709,6 +1126,7 @@ export class SoundEngine {
     this.masterGain = null;
     this.musicBus = null;
     this.sfxBus = null;
+    this.voiceBus = null;
     this.noiseBuffer = null;
   }
 
@@ -744,8 +1162,12 @@ export class SoundEngine {
       const sfxBus = ctx.createGain();
       sfxBus.gain.setValueAtTime(0.85, ctx.currentTime);
 
+      const voiceBus = ctx.createGain();
+      voiceBus.gain.setValueAtTime(1.0, ctx.currentTime);
+
       musicBus.connect(masterGain);
       sfxBus.connect(masterGain);
+      voiceBus.connect(masterGain);
       masterGain.connect(compressor);
       compressor.connect(ctx.destination);
 
@@ -753,6 +1175,9 @@ export class SoundEngine {
       this.masterGain = masterGain;
       this.musicBus = musicBus;
       this.sfxBus = sfxBus;
+      this.voiceBus = voiceBus;
+
+      void this.decodePendingBuffers();
       return ctx;
     } catch {
       return null;
@@ -796,6 +1221,294 @@ export class SoundEngine {
   }
 
   // =========================================================================
+  // Continuous Pedal-Kart Motion Rig
+  // =========================================================================
+
+  private ensureKartMotionRig(ctx: AudioContext, dest: AudioNode): KartMotionRig {
+    if (this.kartRig) return this.kartRig;
+
+    const now = ctx.currentTime;
+
+    const purrOsc = ctx.createOscillator();
+    purrOsc.type = 'triangle';
+    purrOsc.frequency.setValueAtTime(52, now);
+
+    const purrFilter = ctx.createBiquadFilter();
+    purrFilter.type = 'lowpass';
+    purrFilter.frequency.setValueAtTime(220, now);
+    purrFilter.Q.setValueAtTime(1.2, now);
+
+    const purrGain = ctx.createGain();
+    purrGain.gain.setValueAtTime(0, now);
+
+    // Soft rhythmic pedal cadence LFO modulating filter frequency gently
+    const chugLfo = ctx.createOscillator();
+    chugLfo.type = 'sine';
+    chugLfo.frequency.setValueAtTime(7, now);
+
+    const chugDepth = ctx.createGain();
+    chugDepth.gain.setValueAtTime(55, now);
+
+    chugLfo.connect(chugDepth);
+    chugDepth.connect(purrFilter.frequency);
+
+    purrOsc.connect(purrFilter);
+    purrFilter.connect(purrGain);
+    purrGain.connect(dest);
+
+    // Boost shimmer layer (warm fifth harmonic)
+    const boostOscA = ctx.createOscillator();
+    boostOscA.type = 'sine';
+    boostOscA.frequency.setValueAtTime(523.25, now);
+
+    const boostOscB = ctx.createOscillator();
+    boostOscB.type = 'triangle';
+    boostOscB.frequency.setValueAtTime(783.99, now);
+
+    const boostFilter = ctx.createBiquadFilter();
+    boostFilter.type = 'bandpass';
+    boostFilter.frequency.setValueAtTime(1800, now);
+    boostFilter.Q.setValueAtTime(1.4, now);
+
+    const boostGain = ctx.createGain();
+    boostGain.gain.setValueAtTime(0, now);
+
+    boostOscA.connect(boostFilter);
+    boostOscB.connect(boostFilter);
+    boostFilter.connect(boostGain);
+    boostGain.connect(dest);
+
+    purrOsc.start(now);
+    chugLfo.start(now);
+    boostOscA.start(now);
+    boostOscB.start(now);
+
+    this.kartRig = {
+      purrOsc,
+      purrFilter,
+      purrGain,
+      chugLfo,
+      chugDepth,
+      boostOscA,
+      boostOscB,
+      boostFilter,
+      boostGain,
+    };
+
+    return this.kartRig;
+  }
+
+  private silenceKartMotion(): void {
+    if (!this.kartRig || !this.ctx) return;
+    try {
+      const now = this.ctx.currentTime;
+      this.kartRig.purrGain.gain.setTargetAtTime(0, now, 0.04);
+      this.kartRig.boostGain.gain.setTargetAtTime(0, now, 0.04);
+    } catch {
+      // Ignore
+    }
+  }
+
+  private teardownKartMotionRig(): void {
+    if (!this.kartRig) return;
+    const rig = this.kartRig;
+    this.kartRig = null;
+    const nodes: AudioNode[] = [
+      rig.purrOsc,
+      rig.purrFilter,
+      rig.purrGain,
+      rig.chugLfo,
+      rig.chugDepth,
+      rig.boostOscA,
+      rig.boostOscB,
+      rig.boostFilter,
+      rig.boostGain,
+    ];
+    for (const node of nodes) {
+      try {
+        if ('stop' in node && typeof (node as OscillatorNode).stop === 'function') {
+          (node as OscillatorNode).stop();
+        }
+      } catch {
+        // Ignore stop errors
+      }
+      try {
+        node.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+  }
+
+  // =========================================================================
+  // Voice Buffer Loading, Decoding & Active Source Management
+  // =========================================================================
+
+  private async preloadVoiceManifest(): Promise<void> {
+    if (this.manifestLoadStarted || this.disposed) return;
+    if (typeof fetch !== 'function') return;
+    this.manifestLoadStarted = true;
+
+    try {
+      const resp = await fetch('./audio/voices/manifest.json', {
+        cache: 'no-cache',
+      });
+      if (!resp.ok) return;
+
+      const text = await resp.text();
+      if (!text.trim()) return;
+
+      const manifest = JSON.parse(text) as Partial<GeneratedVoiceManifest>;
+      if (!manifest || !manifest.clips || typeof manifest.clips !== 'object') {
+        return;
+      }
+
+      const entries = Object.entries(manifest.clips).filter(
+        (pair): pair is [string, string] =>
+          typeof pair[0] === 'string' && typeof pair[1] === 'string' && pair[1].length > 0
+      );
+      if (entries.length === 0) return;
+
+      await Promise.allSettled(
+        entries.map(async ([clipId, rawPath]) => {
+          if (this.disposed) return;
+          const url = this.resolveManifestClipUrl(rawPath);
+          const clipResp = await fetch(url);
+          if (!clipResp.ok) return;
+          const arrayBuf = await clipResp.arrayBuffer();
+          if (this.disposed || arrayBuf.byteLength === 0) return;
+          this.geminiRawClips.set(clipId, arrayBuf);
+        })
+      );
+
+      if (this.ctx) {
+        await this.decodePendingBuffers();
+      }
+    } catch {
+      // Safe offline / empty manifest fallback: silently use Web Speech
+    }
+  }
+
+  private resolveManifestClipUrl(rawPath: string): string {
+    if (
+      rawPath.startsWith('./') ||
+      rawPath.startsWith('/') ||
+      rawPath.startsWith('http://') ||
+      rawPath.startsWith('https://')
+    ) {
+      return rawPath;
+    }
+    if (rawPath.startsWith('audio/')) {
+      return `./${rawPath}`;
+    }
+    return `./audio/voices/${rawPath}`;
+  }
+
+  private async decodePendingBuffers(): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx || this.disposed || this.manifestDecodeInFlight) return;
+
+    this.manifestDecodeInFlight = true;
+    try {
+      for (const [clipId, rawBuf] of this.geminiRawClips.entries()) {
+        if (this.disposed) return;
+        if (this.geminiBuffers.has(clipId)) continue;
+        try {
+          // Copy buffer before decodeAudioData detaches it
+          const copy = rawBuf.slice(0);
+          const decoded = await ctx.decodeAudioData(copy);
+          if (!this.disposed) {
+            this.geminiBuffers.set(clipId, decoded);
+          }
+        } catch {
+          // Skip invalid audio file cleanly
+        }
+      }
+
+      await this.decodeFamilyBlobs(ctx);
+    } finally {
+      this.manifestDecodeInFlight = false;
+    }
+  }
+
+  private async decodeFamilyBlobs(ctx: AudioContext): Promise<void> {
+    for (const [clipId, blob] of this.familyBlobs.entries()) {
+      if (this.disposed) return;
+      if (this.familyBuffers.has(clipId)) continue;
+      try {
+        const arr = await blob.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(arr);
+        if (!this.disposed) {
+          this.familyBuffers.set(clipId, decoded);
+        }
+      } catch {
+        // Ignore corrupted/unsupported recording
+      }
+    }
+  }
+
+  private stopActiveVoiceBuffers(): void {
+    for (const src of this.activeVoiceSources) {
+      try {
+        src.onended = null;
+        src.stop();
+      } catch {
+        // Ignore already-stopped nodes
+      }
+      try {
+        src.disconnect();
+      } catch {
+        // Ignore
+      }
+    }
+    this.activeVoiceSources.clear();
+  }
+
+  private playVoiceBufferSequence(
+    buffers: AudioBuffer[],
+    priority: 'high' | 'normal',
+    overlapSec = 0
+  ): void {
+    if (this.disposed || buffers.length === 0) return;
+
+    if (priority === 'high') {
+      this.stopActiveVoiceBuffers();
+      this.cancelSpeech();
+    } else if (this.activeVoiceSources.size > 0) {
+      // Never talk over an active voice clip on normal priority
+      return;
+    }
+
+    const ctx = this.getReadyContext();
+    if (!ctx || !this.voiceBus) return;
+
+    let cursorTime = ctx.currentTime + 0.01;
+    for (let i = 0; i < buffers.length; i++) {
+      const buffer = buffers[i];
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(this.voiceBus);
+
+      this.activeVoiceSources.add(src);
+      src.onended = () => {
+        this.activeVoiceSources.delete(src);
+        try {
+          src.disconnect();
+        } catch {
+          // Ignore
+        }
+      };
+
+      src.start(cursorTime);
+      const stepAdvance =
+        i < buffers.length - 1
+          ? Math.max(0.1, buffer.duration - overlapSec)
+          : buffer.duration;
+      cursorTime += stepAdvance;
+    }
+  }
+
+  // =========================================================================
   // Procedural Music Lookahead Scheduler
   // =========================================================================
 
@@ -816,7 +1529,6 @@ export class SoundEngine {
     this.nextStepTime = ctx.currentTime + 0.04;
 
     const pattern = PATTERNS[mode];
-    const secondsPerStep = 60 / pattern.bpm / pattern.stepsPerBeat;
     const scheduleAheadTime = 0.14;
 
     const tick = (): void => {
@@ -840,6 +1552,11 @@ export class SoundEngine {
         this.nextStepTime = this.ctx.currentTime + 0.03;
       }
 
+      const isFinal = mode === 'race' && this.finalStretchActive;
+      const tempoMult = isFinal ? 1.12 : 1.0;
+      const semitoneShift = isFinal ? 1 : 0;
+      const secondsPerStep = 60 / (pattern.bpm * tempoMult) / pattern.stepsPerBeat;
+
       while (this.nextStepTime < this.ctx.currentTime + scheduleAheadTime) {
         const step = pattern.steps[this.currentStepIndex % pattern.steps.length];
         this.scheduleMusicStep(
@@ -848,7 +1565,8 @@ export class SoundEngine {
           step,
           this.nextStepTime,
           secondsPerStep,
-          mode
+          mode,
+          semitoneShift
         );
         this.nextStepTime += secondsPerStep;
         this.currentStepIndex = (this.currentStepIndex + 1) % pattern.steps.length;
@@ -894,12 +1612,13 @@ export class SoundEngine {
     step: StepNote,
     time: number,
     stepDur: number,
-    mode: MusicMode
+    mode: MusicMode,
+    semitoneShift = 0
   ): void {
     const accentMult = step.accent ? 1.18 : 1.0;
 
     if (step.lead !== undefined) {
-      const hz = midiToHz(step.lead);
+      const hz = midiToHz(step.lead + semitoneShift);
       if (mode === 'race') {
         this.playMarimbaNote(ctx, dest, hz, time, stepDur * 1.15, 0.24 * accentMult);
       } else if (mode === 'podium') {
@@ -910,12 +1629,12 @@ export class SoundEngine {
     }
 
     if (step.harmony !== undefined) {
-      const hz = midiToHz(step.harmony);
+      const hz = midiToHz(step.harmony + semitoneShift);
       this.playWarmLeadNote(ctx, dest, hz, time, stepDur * 1.25, 0.11 * accentMult);
     }
 
     if (step.bass !== undefined) {
-      const hz = midiToHz(step.bass);
+      const hz = midiToHz(step.bass + semitoneShift);
       this.playBouncyBassNote(ctx, dest, hz, time, stepDur * 0.9, 0.26);
     }
 
@@ -926,6 +1645,21 @@ export class SoundEngine {
     if (step.shaker) {
       this.playGentleShaker(ctx, dest, time, mode === 'race' ? 0.085 : 0.055);
     }
+  }
+
+  private playFinalStretchStinger(ctx: AudioContext, dest: AudioNode): void {
+    const now = ctx.currentTime;
+    // Brief 3-note upbeat final-stretch stinger (G5 -> A5 -> Db6 to match +1 semitone key!)
+    const stinger = [
+      { hz: midiToHz(N.G5), delay: 0.0, dur: 0.11 },
+      { hz: midiToHz(N.A5), delay: 0.09, dur: 0.11 },
+      { hz: midiToHz(N.C6 + 1), delay: 0.18, dur: 0.34 },
+    ];
+    stinger.forEach((n) => {
+      const t = now + n.delay;
+      this.playWarmLeadNote(ctx, dest, n.hz, t, n.dur, 0.34);
+      this.playGlockenspielNote(ctx, dest, n.hz * 2, t, n.dur * 0.85, 0.16);
+    });
   }
 
   // =========================================================================
@@ -1127,8 +1861,52 @@ export class SoundEngine {
   }
 
   // =========================================================================
-  // Web Speech API Helpers
+  // Expressive Character Web Speech API Helpers
   // =========================================================================
+
+  private speakWithCharacterProfile(
+    speaker: VoiceSpeakerId,
+    text: string,
+    priority: 'high' | 'normal'
+  ): void {
+    if (this.disposed || !this.settings.voiceEnabled) return;
+    if (!text.trim()) return;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (typeof SpeechSynthesisUtterance === 'undefined') return;
+
+    try {
+      const synth = window.speechSynthesis;
+      if (priority === 'high') {
+        this.stopActiveVoiceBuffers();
+        synth.cancel();
+      } else if (this.activeVoiceSources.size > 0) {
+        return;
+      }
+
+      if (!this.preferredVoice) {
+        this.selectPreferredVoice();
+      }
+
+      const profile =
+        CHARACTER_VOICE_PROFILES[speaker] ?? CHARACTER_VOICE_PROFILES.announcer;
+      const utterance = new SpeechSynthesisUtterance(text);
+
+      if (this.preferredVoice) {
+        utterance.voice = this.preferredVoice;
+        utterance.lang = this.preferredVoice.lang;
+      } else {
+        utterance.lang = 'en-GB';
+      }
+
+      utterance.pitch = Math.max(0.5, Math.min(2.0, profile.webSpeechPitch));
+      utterance.rate = Math.max(0.5, Math.min(2.0, profile.webSpeechRate));
+      utterance.volume = 0.96;
+
+      synth.speak(utterance);
+    } catch {
+      // Never throw if speechSynthesis is blocked or unavailable
+    }
+  }
 
   private bindSpeechVoices(): void {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
@@ -1168,20 +1946,20 @@ export class SoundEngine {
       );
       if (englishVoices.length === 0) return;
 
-      const preferredNames = [
+      // 1. Prioritize warm British voices
+      const britishPreferredNames = [
         'google uk english female',
-        'google us english',
-        'samantha',
+        'google uk english',
+        'martha',
+        'serena',
+        'kate',
+        'daniel',
+        'arthur',
         'libby',
         'sonia',
-        'aria',
-        'jenny',
-        'karen',
-        'serena',
-        'daniel',
       ];
 
-      for (const target of preferredNames) {
+      for (const target of britishPreferredNames) {
         const match = englishVoices.find((v) =>
           v.name.toLowerCase().includes(target)
         );
@@ -1191,10 +1969,38 @@ export class SoundEngine {
         }
       }
 
-      const british = englishVoices.find((v) =>
-        v.lang.toLowerCase().startsWith('en-gb')
-      );
-      this.preferredVoice = british ?? englishVoices[0];
+      const britishLang = englishVoices.find((v) => {
+        const lang = v.lang.toLowerCase();
+        return lang.startsWith('en-gb') || lang.startsWith('en_gb');
+      });
+      if (britishLang) {
+        this.preferredVoice = britishLang;
+        return;
+      }
+
+      // 2. Warm US/English fallback
+      const fallbackNames = [
+        'samantha',
+        'google us english',
+        'aria',
+        'jenny',
+        'karen',
+      ];
+      for (const target of fallbackNames) {
+        const match = englishVoices.find((v) =>
+          v.name.toLowerCase().includes(target)
+        );
+        if (match) {
+          this.preferredVoice = match;
+          return;
+        }
+      }
+
+      const usLang = englishVoices.find((v) => {
+        const lang = v.lang.toLowerCase();
+        return lang.startsWith('en-us') || lang.startsWith('en_us');
+      });
+      this.preferredVoice = usLang ?? englishVoices[0];
     } catch {
       // Ignore
     }

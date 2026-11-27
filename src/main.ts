@@ -68,6 +68,9 @@ function bootstrap(): void {
       currentSettings = { ...nextSettings };
       sim?.updateSettings(currentSettings);
     },
+    onFamilyVoiceChanged: () => {
+      void sound.reloadFamilyVoices();
+    },
     onTouchInput: (patch) => {
       sound.unlock();
       sim?.setTouchInput(patch);

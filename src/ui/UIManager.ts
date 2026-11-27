@@ -1,8 +1,10 @@
+import { FamilyVoiceStore } from '../audio/FamilyVoiceStore';
 import {
   ALL_NUMBERBLOCK_IDS,
   NUMBERBLOCK_SPECS,
   NUMBER_WORDS,
 } from '../data/numberblocks';
+import { FAMILY_VOICE_SLOTS, FamilyVoiceSlot } from '../data/voiceManifest';
 import {
   GameMode,
   GameScreen,
@@ -26,6 +28,7 @@ export interface UIHandlers {
   onPitStopAnswer: (choice: number) => void;
   onPodiumTapNumber: (id: NumberblockId) => void;
   onSettingsChange: (settings: ParentSettings) => void;
+  onFamilyVoiceChanged?: () => void;
   onTouchInput: (patch: Partial<InputState>) => void;
   onPauseToggle: () => void;
 }
@@ -300,10 +303,36 @@ export class UIManager {
   private toggleMusic!: HTMLButtonElement;
   private toggleSfx!: HTMLButtonElement;
   private toggleVoice!: HTMLButtonElement;
+  private toggleFamilyVoice!: HTMLButtonElement;
   private toggleAutoSteer!: HTMLButtonElement;
   private togglePitStop!: HTMLButtonElement;
   private segCount5!: HTMLButtonElement;
   private segCount10!: HTMLButtonElement;
+
+  // Family Voice Studio state & elements
+  private readonly voiceStore = new FamilyVoiceStore();
+  private recordedBlobs = new Map<string, Blob>();
+  private voiceStudioContainer!: HTMLElement;
+  private voiceStudioToggleBtn!: HTMLButtonElement;
+  private voiceStudioCountBadge!: HTMLElement;
+  private voiceStudioStatusEl!: HTMLElement;
+  private voiceSlotControls = new Map<
+    string,
+    {
+      row: HTMLElement;
+      recBtn: HTMLButtonElement;
+      playBtn: HTMLButtonElement;
+      delBtn: HTMLButtonElement;
+    }
+  >();
+  private voiceStudioExpanded = false;
+  private activeRecording: {
+    slotId: string;
+    stop: () => Promise<Blob>;
+    timeoutId: number;
+  } | null = null;
+  private voiceOperationBusy = false;
+  private disposed = false;
 
   // Timers & active touch pointers
   private mathBannerTimer: number | null = null;
@@ -354,6 +383,7 @@ export class UIManager {
     this.setSelectedRacer(this.selectedRacer);
     this.updateSettings(this.settings);
     this.setScreen('title');
+    void this.refreshFamilyVoices();
   }
 
   // =========================================================================
@@ -924,6 +954,16 @@ export class UIManager {
       'Major Three & number counting',
       () => this.patchSetting({ voiceEnabled: !this.settings.voiceEnabled })
     );
+    this.toggleFamilyVoice = this.addToggleRow(
+      drawer,
+      'Use Family Voice Pack',
+      'Play recorded family voices first',
+      () =>
+        this.patchSetting({ useFamilyVoice: !this.settings.useFamilyVoice })
+    );
+
+    drawer.appendChild(this.buildFamilyVoiceStudio());
+
     this.toggleAutoSteer = this.addToggleRow(
       drawer,
       'Toddler Auto-Steer Assist',
@@ -968,6 +1008,308 @@ export class UIManager {
     return this.settingsBackdrop;
   }
 
+  private buildFamilyVoiceStudio(): HTMLElement {
+    const container = el('div', 'nb-voice-studio');
+    this.voiceStudioContainer = container;
+
+    const headerBtn = el(
+      'button',
+      'nb-voice-studio-toggle'
+    ) as HTMLButtonElement;
+    headerBtn.type = 'button';
+    headerBtn.setAttribute('aria-expanded', 'false');
+
+    const titleWrap = el('div', 'nb-voice-studio-title-wrap');
+    const title = el('span', 'nb-setting-label', 'Family Voice Studio 🎙️');
+    const hint = el(
+      'span',
+      'nb-setting-hint',
+      'Record Mum, Dad, or sibling voices!'
+    );
+    titleWrap.append(title, hint);
+
+    const rightMeta = el('div', 'nb-voice-studio-meta');
+    this.voiceStudioCountBadge = el(
+      'span',
+      'nb-voice-count-badge',
+      `0 / ${FAMILY_VOICE_SLOTS.length} recorded`
+    );
+    const chevron = el('span', 'nb-voice-chevron', '▾');
+    rightMeta.append(this.voiceStudioCountBadge, chevron);
+
+    headerBtn.append(titleWrap, rightMeta);
+    this.voiceStudioToggleBtn = headerBtn;
+
+    this.listen(headerBtn, 'click', () => {
+      this.voiceStudioExpanded = !this.voiceStudioExpanded;
+      container.classList.toggle('is-expanded', this.voiceStudioExpanded);
+      headerBtn.setAttribute('aria-expanded', String(this.voiceStudioExpanded));
+      if (this.voiceStudioExpanded) {
+        void this.refreshFamilyVoices();
+      }
+    });
+
+    const body = el('div', 'nb-voice-studio-body');
+    this.voiceStudioStatusEl = el('div', 'nb-voice-studio-status');
+    if (!FamilyVoiceStore.isRecordingSupported()) {
+      this.setVoiceStudioStatus(
+        'Microphone recording is not supported in this browser. Saved clips still play if present!',
+        'warn'
+      );
+    } else {
+      this.setVoiceStudioStatus(
+        'Tap Record, speak clearly for up to 3.5s, then tap Stop!',
+        'info'
+      );
+    }
+
+    const grid = el('div', 'nb-voice-studio-grid');
+    for (const slot of FAMILY_VOICE_SLOTS) {
+      const row = el('div', 'nb-voice-slot');
+
+      const chip = el('span', 'nb-voice-slot-chip', slot.label);
+      if (slot.id === 'num_7') {
+        chip.style.background =
+          'linear-gradient(135deg, #E53935, #FDD835, #29B6F6, #AB47BC)';
+      } else if (slot.id === 'num_10') {
+        chip.style.background = '#ffffff';
+        chip.style.color = '#E53935';
+        chip.style.borderColor = '#E53935';
+      } else {
+        chip.style.background = slot.accentColor;
+        chip.style.color = getReadableBadgeTextColor(slot.accentColor);
+      }
+
+      const prompt = el('span', 'nb-voice-slot-prompt', slot.promptText);
+
+      const actions = el('div', 'nb-voice-slot-actions');
+
+      const recBtn = el(
+        'button',
+        'nb-voice-btn nb-voice-btn--record',
+        'Rec'
+      ) as HTMLButtonElement;
+      recBtn.type = 'button';
+      recBtn.setAttribute('aria-label', `Record ${slot.promptText}`);
+      recBtn.disabled = !FamilyVoiceStore.isRecordingSupported();
+      this.listen(recBtn, 'click', () => {
+        void this.handleRecordToggle(slot);
+      });
+
+      const playBtn = el(
+        'button',
+        'nb-voice-btn nb-voice-btn--play',
+        '▶'
+      ) as HTMLButtonElement;
+      playBtn.type = 'button';
+      playBtn.setAttribute('aria-label', `Play ${slot.promptText}`);
+      playBtn.disabled = true;
+      this.listen(playBtn, 'click', () => {
+        void this.handlePlaySlot(slot.id);
+      });
+
+      const delBtn = el(
+        'button',
+        'nb-voice-btn nb-voice-btn--delete',
+        '✕'
+      ) as HTMLButtonElement;
+      delBtn.type = 'button';
+      delBtn.setAttribute('aria-label', `Delete ${slot.promptText}`);
+      delBtn.disabled = true;
+      this.listen(delBtn, 'click', () => {
+        void this.handleDeleteSlot(slot.id);
+      });
+
+      actions.append(recBtn, playBtn, delBtn);
+      row.append(chip, prompt, actions);
+      grid.appendChild(row);
+      this.voiceSlotControls.set(slot.id, { row, recBtn, playBtn, delBtn });
+    }
+
+    body.append(this.voiceStudioStatusEl, grid);
+    container.append(headerBtn, body);
+    return container;
+  }
+
+  private setVoiceStudioStatus(
+    message: string,
+    tone: 'info' | 'warn' | 'success' | 'recording'
+  ): void {
+    this.voiceStudioStatusEl.textContent = message;
+    this.voiceStudioStatusEl.className = `nb-voice-studio-status is-${tone}`;
+  }
+
+  private async refreshFamilyVoices(): Promise<void> {
+    try {
+      const blobs = await this.voiceStore.loadAllBlobs();
+      if (this.disposed) return;
+      this.recordedBlobs = blobs;
+      this.syncVoiceStudioUI();
+    } catch {
+      // Ignore storage read failures gracefully
+    }
+  }
+
+  private syncVoiceStudioUI(): void {
+    const total = FAMILY_VOICE_SLOTS.length;
+    const count = FAMILY_VOICE_SLOTS.filter((s) =>
+      this.recordedBlobs.has(s.id)
+    ).length;
+    this.voiceStudioCountBadge.textContent = `${count} / ${total} recorded`;
+    this.voiceStudioCountBadge.classList.toggle('has-clips', count > 0);
+
+    const micSupported = FamilyVoiceStore.isRecordingSupported();
+    const recordingSlotId = this.activeRecording?.slotId ?? null;
+
+    for (const slot of FAMILY_VOICE_SLOTS) {
+      const ctrl = this.voiceSlotControls.get(slot.id);
+      if (!ctrl) continue;
+      const hasClip = this.recordedBlobs.has(slot.id);
+      const isRec = recordingSlotId === slot.id;
+
+      ctrl.row.classList.toggle('is-recorded', hasClip);
+      ctrl.row.classList.toggle('is-recording', isRec);
+
+      ctrl.recBtn.textContent = isRec ? 'Stop' : 'Rec';
+      ctrl.recBtn.classList.toggle('is-recording', isRec);
+      ctrl.recBtn.disabled = !micSupported || (recordingSlotId !== null && !isRec);
+
+      ctrl.playBtn.disabled = !hasClip || recordingSlotId !== null;
+      ctrl.delBtn.disabled = !hasClip || recordingSlotId !== null;
+    }
+  }
+
+  private async handleRecordToggle(slot: FamilyVoiceSlot): Promise<void> {
+    if (this.disposed || this.voiceOperationBusy) return;
+
+    if (!FamilyVoiceStore.isRecordingSupported()) {
+      this.setVoiceStudioStatus(
+        'Microphone recording is not supported in this browser.',
+        'warn'
+      );
+      return;
+    }
+
+    if (this.activeRecording && this.activeRecording.slotId === slot.id) {
+      await this.stopActiveRecording(true);
+      return;
+    }
+
+    if (this.activeRecording) {
+      await this.stopActiveRecording(true);
+    }
+
+    this.voiceOperationBusy = true;
+    this.setVoiceStudioStatus(
+      `Recording "${slot.promptText}"... Tap Stop when done!`,
+      'recording'
+    );
+
+    try {
+      const session = await this.voiceStore.startRecording(3500);
+      if (this.disposed || !this.settingsBackdrop.classList.contains('is-open')) {
+        await session.stop().catch(() => undefined);
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        void this.stopActiveRecording(true);
+      }, 3500);
+
+      this.activeRecording = {
+        slotId: slot.id,
+        stop: session.stop,
+        timeoutId,
+      };
+      this.syncVoiceStudioUI();
+    } catch (err) {
+      const msg =
+        err instanceof Error ? `${err.name} ${err.message}`.toLowerCase() : '';
+      if (
+        msg.includes('notallowed') ||
+        msg.includes('permission') ||
+        msg.includes('denied')
+      ) {
+        this.setVoiceStudioStatus(
+          'Microphone permission was denied. Allow mic access in your browser settings to record!',
+          'warn'
+        );
+      } else {
+        this.setVoiceStudioStatus(
+          'Could not access microphone. Please check your device mic and try again.',
+          'warn'
+        );
+      }
+      this.syncVoiceStudioUI();
+    } finally {
+      this.voiceOperationBusy = false;
+    }
+  }
+
+  private async stopActiveRecording(save: boolean): Promise<void> {
+    const current = this.activeRecording;
+    if (!current) return;
+
+    this.activeRecording = null;
+    window.clearTimeout(current.timeoutId);
+    this.syncVoiceStudioUI();
+
+    try {
+      const blob = await current.stop();
+      if (save && !this.disposed && blob.size > 0) {
+        await this.voiceStore.saveRecording(current.slotId, blob);
+        this.recordedBlobs.set(current.slotId, blob);
+        this.setVoiceStudioStatus(
+          'Saved! Tap ▶ to preview or race to hear it!',
+          'success'
+        );
+        this.handlers.onFamilyVoiceChanged?.();
+      } else if (!save) {
+        this.setVoiceStudioStatus('Recording cancelled.', 'info');
+      }
+    } catch {
+      if (save) {
+        this.setVoiceStudioStatus(
+          'Recording finished — tap Rec to try again.',
+          'warn'
+        );
+      }
+    } finally {
+      if (!this.disposed) {
+        this.syncVoiceStudioUI();
+      }
+    }
+  }
+
+  private async handlePlaySlot(slotId: string): Promise<void> {
+    if (this.disposed || this.activeRecording) return;
+    const blob = this.recordedBlobs.get(slotId);
+    if (!blob) return;
+
+    try {
+      await this.voiceStore.previewBlob(blob);
+    } catch {
+      this.setVoiceStudioStatus(
+        'Could not play back that recording.',
+        'warn'
+      );
+    }
+  }
+
+  private async handleDeleteSlot(slotId: string): Promise<void> {
+    if (this.disposed || this.activeRecording) return;
+
+    try {
+      await this.voiceStore.deleteRecording(slotId);
+      this.recordedBlobs.delete(slotId);
+      this.syncVoiceStudioUI();
+      this.setVoiceStudioStatus('Recording deleted.', 'info');
+      this.handlers.onFamilyVoiceChanged?.();
+    } catch {
+      this.setVoiceStudioStatus('Could not delete that recording.', 'warn');
+    }
+  }
+
   private addToggleRow(
     parent: HTMLElement,
     label: string,
@@ -997,11 +1339,15 @@ export class UIManager {
 
   private openSettingsDrawer(): void {
     this.settingsBackdrop.classList.add('is-open');
+    void this.refreshFamilyVoices();
   }
 
   private closeSettingsDrawer(): void {
     const wasOpen = this.settingsBackdrop.classList.contains('is-open');
     this.settingsBackdrop.classList.remove('is-open');
+    if (this.activeRecording) {
+      void this.stopActiveRecording(false);
+    }
     if (
       wasOpen &&
       (this.currentScreen === 'playing' || this.currentScreen === 'countdown')
@@ -1329,6 +1675,7 @@ export class UIManager {
     this.setToggleState(this.toggleMusic, settings.musicEnabled);
     this.setToggleState(this.toggleSfx, settings.sfxEnabled);
     this.setToggleState(this.toggleVoice, settings.voiceEnabled);
+    this.setToggleState(this.toggleFamilyVoice, settings.useFamilyVoice);
     this.setToggleState(this.toggleAutoSteer, settings.autoSteerAssist);
     this.setToggleState(this.togglePitStop, settings.pitStopQuizzes);
 
@@ -1340,6 +1687,10 @@ export class UIManager {
   }
 
   public dispose(): void {
+    this.disposed = true;
+    if (this.activeRecording) {
+      void this.stopActiveRecording(false);
+    }
     if (this.mathBannerTimer !== null) {
       window.clearTimeout(this.mathBannerTimer);
       this.mathBannerTimer = null;
@@ -1354,6 +1705,8 @@ export class UIManager {
     }
     this.cleanups.length = 0;
     this.racerTiles.clear();
+    this.voiceSlotControls.clear();
+    this.recordedBlobs.clear();
     this.root.replaceChildren();
   }
 

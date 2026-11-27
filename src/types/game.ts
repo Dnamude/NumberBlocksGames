@@ -50,6 +50,7 @@ export interface ParentSettings {
   musicEnabled: boolean;
   sfxEnabled: boolean;
   voiceEnabled: boolean;
+  useFamilyVoice: boolean;
   autoSteerAssist: boolean;
   maxCountTarget: 5 | 10;
   pitStopQuizzes: boolean;

@@ -260,7 +260,14 @@ export class GameSimulation {
     this.garageCamRadius = 6.6 + driverHeight * 1.15;
     this.garageCamHeight = 2.6 + driverHeight * 0.42;
     this.garageCamLookAtY = 1.05 + driverHeight * 0.36;
-    this.sound.speak(NUMBERBLOCK_SPECS[this.selectedRacer].catchphrase, 'high');
+    this.sound.updateKartMotion(0, false, false);
+    this.sound.setFinalStretch(false);
+    this.sound.speakCharacter(
+      this.selectedRacer,
+      NUMBERBLOCK_SPECS[this.selectedRacer].catchphrase,
+      `char_${this.selectedRacer}_catchphrase`,
+      'high'
+    );
   }
 
   public selectRacer(id: NumberblockId): void {
@@ -271,7 +278,12 @@ export class GameSimulation {
 
     const spec = NUMBERBLOCK_SPECS[id];
     this.sound.playCountNote(id);
-    this.sound.speak(spec.catchphrase, 'high');
+    this.sound.speakCharacter(
+      id,
+      spec.catchphrase,
+      `char_${id}_catchphrase`,
+      'high'
+    );
 
     if (this.screen === 'garage') {
       this.garageKart.setDriver(id);
@@ -301,7 +313,7 @@ export class GameSimulation {
           return;
         }
         this.garageKart.driverRig.highlightBlock(i);
-        this.sound.speakNumber(i + 1);
+        this.sound.speakNumber(i + 1, (i + 1) as NumberblockId);
         this.ui.updateGarageCountHighlight(i + 1, id);
 
         const blockMesh = this.garageKart.driverRig.blockMeshes[i];
@@ -323,7 +335,7 @@ export class GameSimulation {
       this.garageKart.driverRig.highlightBlock(null);
       this.ui.updateGarageCountHighlight(null, id);
       this.sound.playCombineMagic();
-      this.sound.speak(`${NUMBER_WORDS[id]}! ${id} blocks!`, 'high');
+      this.sound.speakCharacter(id, `${NUMBER_WORDS[id]}! ${id} blocks!`, undefined, 'high');
       this.tempPos.copy(GARAGE_ORIGIN).add(new THREE.Vector3(0, 2.0, 0));
       this.particles.emitConfetti(this.tempPos, 28);
     }, id * stepDelay + 680);
@@ -400,6 +412,8 @@ export class GameSimulation {
     this.screen = 'countdown';
     this.ui.setScreen('countdown');
     this.ui.hideCountdown();
+    this.sound.updateKartMotion(0, false, false);
+    this.sound.setFinalStretch(false);
     this.sound.startMusic('race');
 
     this.syncHudImmediate();
@@ -410,6 +424,9 @@ export class GameSimulation {
     if (this.disposed) return;
     if (this.screen !== 'playing' && this.screen !== 'countdown') return;
     this.paused = forcePaused !== undefined ? forcePaused : !this.paused;
+    if (this.paused) {
+      this.sound.updateKartMotion(0, false, false);
+    }
   }
 
   public updateSettings(settings: ParentSettings): void {
@@ -453,7 +470,13 @@ export class GameSimulation {
 
       this.ui.showPitStopFeedback(true, `Yay! ${choice} is right! Super Boost!`);
       this.sound.playCombineMagic();
-      this.sound.speak(`Yay! ${word}! Super boost!`, 'high');
+      this.sound.playCrowdCheer();
+      this.sound.playClip(
+        'cheer_hooray',
+        `Hooray! ${word}! Super counting!`,
+        'announcer',
+        'high'
+      );
 
       const worldPos = this.track.getWorldPosition(
         this.playerS,
@@ -479,7 +502,12 @@ export class GameSimulation {
     } else {
       this.ui.showPitStopFeedback(false, "Let's count them together! Try again!");
       this.sound.playUiClick();
-      this.sound.speak("Almost! Let's count them together and try again!", 'high');
+      this.sound.playClip(
+        'pitstop_try_again',
+        'Good try! Let us count them together!',
+        'announcer',
+        'high'
+      );
     }
   }
 
@@ -487,7 +515,7 @@ export class GameSimulation {
     if (this.disposed || this.screen !== 'podium') return;
     this.currentNumber = id;
     this.playerKart.setDriver(id);
-    this.sound.speakNumber(id);
+    this.sound.speakNumber(id, id);
 
     const spec = NUMBERBLOCK_SPECS[id];
     const pos = this.playerKart.group.position.clone().add(new THREE.Vector3(0, 1.8, 0));
@@ -506,6 +534,8 @@ export class GameSimulation {
     this.raceSessionId++;
     this.cancelGarageTour();
     this.clearPitStopTimer();
+    this.sound.updateKartMotion(0, false, false);
+    this.sound.setFinalStretch(false);
 
     if (this.rafId !== null) {
       window.cancelAnimationFrame(this.rafId);
@@ -545,6 +575,8 @@ export class GameSimulation {
     this.ui.setSelectedMode(this.mode);
     this.ui.setSelectedRacer(this.selectedRacer);
     this.ui.hideCountdown();
+    this.sound.updateKartMotion(0, false, false);
+    this.sound.setFinalStretch(false);
     this.sound.startMusic('menu');
 
     this.particles.clear();
@@ -874,8 +906,10 @@ export class GameSimulation {
         if (stage === 0) {
           this.ui.showCountdown('3', '#E53935');
           this.sound.playCountdownBeep(false);
-          this.sound.speak(
+          this.sound.playClip(
+            'countdown_ready',
             'Welcome to the Numberblock Rally! Ready, steady, three!',
+            'announcer',
             'high'
           );
         } else if (stage === 1) {
@@ -887,7 +921,12 @@ export class GameSimulation {
         } else if (stage >= 3) {
           this.ui.showCountdown('GO!', '#43A047');
           this.sound.playCountdownBeep(true);
-          this.sound.speak('GO! Pedal power!', 'high');
+          this.sound.playClip(
+            'countdown_go',
+            'GO! Pedal power!',
+            'announcer',
+            'high'
+          );
           this.screen = 'playing';
           this.ui.setScreen('playing');
           this.countdownHideTimer = COUNTDOWN_STEP_SECONDS;
@@ -924,6 +963,7 @@ export class GameSimulation {
     }
 
     if (this.paused) {
+      this.sound.updateKartMotion(0, false, false);
       this.sceneManager.updateEnvironment(dt, this.elapsedTime, this.playerKart.group.position);
       return;
     }
@@ -1085,13 +1125,25 @@ export class GameSimulation {
       this.setCommentary(EPISODE_COMMENTARY_LINES[this.commentaryIndex]);
     }
 
-    // Camera follow
+    // Camera follow & live pedal-kart audio + final-stretch music
     const sample = this.track.sampleAt(this.playerS);
     const speedRatio = THREE.MathUtils.clamp(
       (this.playerSpeed - 18) / 26 + (this.boostTimer > 0 ? 0.3 : 0),
       0,
       1.25
     );
+    const trackProgress = THREE.MathUtils.clamp(
+      (this.playerS - 14) / (this.track.length - 56),
+      0,
+      1
+    );
+    this.sound.updateKartMotion(
+      speedRatio,
+      this.playerY > 0.15,
+      this.boostTimer > 0
+    );
+    this.sound.setFinalStretch(trackProgress > 0.78);
+
     this.sceneManager.setCameraFollow(
       this.playerKart.group.position,
       sample.tangent,
@@ -1268,11 +1320,16 @@ export class GameSimulation {
               feature.triggered = true;
               this.playerVy = 17.5;
               this.boostTimer = Math.max(this.boostTimer, 2.0);
-              this.sound.playJump();
+              this.sound.playRampLaunch();
               this.sound.playBoost();
               this.particles.emitMathMagic(playerWorldPos, '#FFD54F', 24);
-              this.setCommentary('Woohoo! Big jump!');
-              this.sound.speak('Woohoo! Big jump!', 'normal');
+              this.setCommentary('Woohoo! Super jump!');
+              this.sound.playClip(
+                'super_jump',
+                'Woohoo! Super jump!',
+                'announcer',
+                'normal'
+              );
             }
           }
           break;
@@ -1289,7 +1346,7 @@ export class GameSimulation {
             this.boostTimer = Math.max(this.boostTimer, 1.35);
 
             const spec = NUMBERBLOCK_SPECS[val];
-            this.sound.speakNumber(val);
+            this.sound.speakNumber(val, val);
             this.ui.showCountPopup(val, `${NUMBER_WORDS[val]}!`, spec.primaryColor);
             this.particles.emitConfetti(playerWorldPos, 28);
             this.particles.emitMathMagic(playerWorldPos, spec.primaryColor, 18);
@@ -1308,7 +1365,12 @@ export class GameSimulation {
                 this.boostCharge = Math.min(1, this.boostCharge + 0.35);
                 this.particles.emitMathMagic(playerWorldPos, '#FFD54F', 16);
                 this.setCommentary('Super jump! Way to go!');
-                this.sound.speak('Super jump!', 'normal');
+                this.sound.playClip(
+                  'super_jump',
+                  'Woohoo! Super jump!',
+                  'announcer',
+                  'normal'
+                );
               } else {
                 const drop = feature.value ?? 1;
                 const prev = this.currentNumber;
@@ -1317,7 +1379,7 @@ export class GameSimulation {
                   this.bumpSlowTimer = 0.45;
                   this.sound.playBumpSubtract();
                   this.setCommentary('Keep pedalling, One!');
-                  this.sound.speak('Keep pedalling, One!', 'high');
+                  this.sound.speakCharacter(1, 'Keep pedalling, One!', undefined, 'high');
                 } else {
                   const nextVal = clampNumberblockId(prev - drop);
                   const actualDrop = prev - nextVal;
@@ -1373,6 +1435,12 @@ export class GameSimulation {
               this.particles.emitPoppedBlocks(playerWorldPos, actualDrop, oldColor);
               this.sound.playBumpSubtract();
               this.sound.speakEquation(prev, '-', actualDrop, nextVal);
+              this.sound.playClip(
+                'three_arguing',
+                'Do you mind? I am commentating here!',
+                3,
+                'normal'
+              );
               this.ui.showMathBanner({
                 left: prev,
                 operator: '-',
@@ -1429,7 +1497,12 @@ export class GameSimulation {
                 });
                 this.setCommentary(`${prev} plus ${actualAdded} equals ${nextVal}!`);
               } else {
-                this.sound.speak('Ten out of ten! Super rocket boost!', 'high');
+                this.sound.speakCharacter(
+                  10,
+                  'Ten out of ten! Super rocket boost!',
+                  undefined,
+                  'high'
+                );
                 this.ui.showMathBanner({
                   left: 10,
                   operator: '+',
@@ -1451,9 +1524,14 @@ export class GameSimulation {
           if (Math.abs(this.playerS - feature.z) < 3.4) {
             feature.triggered = true;
             this.particles.emitMudSplash(playerWorldPos, 22);
-            this.sound.playBlobPickup();
+            this.sound.playMudSplash();
             this.setCommentary('Splash! Almost at the finish line!');
-            this.sound.speak('Splash! Almost at the finish line!', 'normal');
+            this.sound.playClip(
+              'mud_splash',
+              'Splash! Almost at the finish line!',
+              'announcer',
+              'normal'
+            );
           }
           break;
         }
@@ -1472,7 +1550,12 @@ export class GameSimulation {
     ) {
       this.doubleDipperWarned = true;
       this.setCommentary('Hold on! Mind the Double-Dipper up ahead!');
-      this.sound.speak('Mind the Double-Dipper up ahead!', 'normal');
+      this.sound.playClip(
+        'double_dipper_warn',
+        'Mind the Double-Dipper up ahead!',
+        'announcer',
+        'normal'
+      );
     }
 
     // 4. Classic Nine "Ah-CHOO!" moment around s = 760
@@ -1490,9 +1573,12 @@ export class GameSimulation {
 
       this.sound.playSneeze();
       this.particles.emitPoppedBlocks(playerWorldPos, 1, '#E53935');
-      this.sound.speak(
-        'Ah-CHOO! Nine minus one equals eight! Octoblock, back in action!',
-        'high'
+      this.sound.playClip('sneeze_nine', 'Ah-CHOO! Oh dear!', 9, 'high');
+      this.sound.playClip(
+        'eq_9_minus_1_8',
+        'Nine minus one equals eight! Octoblock, back in action!',
+        8,
+        'normal'
       );
       this.ui.showMathBanner({
         left: 9,
@@ -1609,8 +1695,9 @@ export class GameSimulation {
     this.currentPitStop = question;
     this.ui.showPitStopQuiz(question);
     this.ui.setScreen('pitstop');
+    this.sound.updateKartMotion(0, false, false);
     this.sound.playUiClick();
-    this.sound.speak(question.voicePrompt, 'high');
+    this.sound.speakCharacter('announcer', question.voicePrompt, undefined, 'high');
   }
 
   private buildPitStopQuestion(): PitStopQuestion {
@@ -1736,19 +1823,31 @@ export class GameSimulation {
     this.podiumOrbitAngle = 0.55;
     this.podiumConfettiTimer = 0;
 
+    this.sound.updateKartMotion(0, false, false);
+    this.sound.setFinalStretch(false);
     this.sound.startMusic('podium');
     this.sound.playFinishFanfare();
+    this.sound.playCrowdCheer();
 
     if (this.currentNumber === 1) {
-      this.sound.speak('Hooray! Only ONE can lift the golden trophy!', 'high');
+      this.sound.playClip(
+        'one_wins_trophy',
+        'Only ONE can lift the trophy! Hooray!',
+        1,
+        'high'
+      );
     } else if (this.mode === 'count-cruise') {
-      this.sound.speak(
+      this.sound.playClip(
+        'finish_celebrate',
         `Hooray! ${NUMBER_WORDS[this.currentNumber]} counted all the way to ${this.highestCount}!`,
+        'announcer',
         'high'
       );
     } else {
-      this.sound.speak(
+      this.sound.playClip(
+        'finish_celebrate',
         `Hooray! ${NUMBER_WORDS[this.currentNumber]} finished the Numberblock Rally!`,
+        'announcer',
         'high'
       );
     }

@@ -263,6 +263,7 @@ export const DEFAULT_PARENT_SETTINGS = {
   musicEnabled: true,
   sfxEnabled: true,
   voiceEnabled: true,
+  useFamilyVoice: true,
   autoSteerAssist: true,
   maxCountTarget: 10 as 5 | 10,
   pitStopQuizzes: true,
