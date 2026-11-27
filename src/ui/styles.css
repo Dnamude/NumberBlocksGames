@@ -1618,6 +1618,10 @@ body,
   animation: nb-pop-in 200ms ease;
 }
 
+.nb-settings-drawer > * {
+  flex-shrink: 0;
+}
+
 .nb-settings-head {
   display: flex;
   align-items: center;
@@ -1850,6 +1854,7 @@ body,
   border-radius: 14px;
   background: #ffffff;
   border: 2px solid #e2ecfc;
+  flex-shrink: 0;
   transition: border-color 140ms ease, background 140ms ease;
 }
 
