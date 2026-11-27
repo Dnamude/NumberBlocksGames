@@ -189,6 +189,8 @@ function bootstrap(): void {
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('blur', onBlur);
   window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onResize);
+  window.visualViewport?.addEventListener('resize', onResize);
 
   window.addEventListener('beforeunload', () => {
     window.removeEventListener('pointerdown', unlockAudio);
@@ -197,6 +199,8 @@ function bootstrap(): void {
     window.removeEventListener('keyup', onKeyUp);
     window.removeEventListener('blur', onBlur);
     window.removeEventListener('resize', onResize);
+    window.removeEventListener('orientationchange', onResize);
+    window.visualViewport?.removeEventListener('resize', onResize);
     sim?.dispose();
     ui.dispose();
     sound.dispose();

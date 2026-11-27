@@ -36,9 +36,12 @@ export class SceneManager {
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2('#CBEFFF', 0.0018);
 
-    const width = Math.max(canvas.clientWidth || window.innerWidth, 1);
-    const height = Math.max(canvas.clientHeight || window.innerHeight, 1);
-    this.camera = new THREE.PerspectiveCamera(58, width / height, 0.3, 1400);
+    const width = Math.max(window.visualViewport?.width || window.innerWidth, 1);
+    const height = Math.max(window.visualViewport?.height || window.innerHeight, 1);
+    const aspect = width / height;
+    const initialPortraitFactor = THREE.MathUtils.clamp((1.0 - aspect) / 0.55, 0, 1);
+    const initialFov = 58 + initialPortraitFactor * 14;
+    this.camera = new THREE.PerspectiveCamera(initialFov, aspect, 0.3, 1400);
     this.camera.position.set(0, 64, -18);
 
     this.renderer = new THREE.WebGLRenderer({
@@ -316,6 +319,15 @@ export class SceneManager {
     }
   }
 
+  public getAspect(): number {
+    const aspect = this.camera?.aspect;
+    return typeof aspect === 'number' && Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  }
+
+  public getPortraitFactor(): number {
+    return THREE.MathUtils.clamp((1.0 - this.getAspect()) / 0.55, 0, 1);
+  }
+
   public setCameraFollow(
     targetPos: THREE.Vector3,
     targetForward: THREE.Vector3,
@@ -326,6 +338,7 @@ export class SceneManager {
     if (this.disposed) return;
 
     const clampedSpeed = Math.max(0, Math.min(1.3, speedRatio));
+    const portraitFactor = this.getPortraitFactor();
     const fwd = this.tempVecA.copy(targetForward);
     if (fwd.lengthSq() < 0.0001) {
       fwd.set(0, 0, 1);
@@ -333,19 +346,21 @@ export class SceneManager {
       fwd.normalize();
     }
 
-    const followDist = 9.2 + clampedSpeed * 1.4;
-    const followHeight = 4.5 + (isAirborne ? 1.15 : 0) + clampedSpeed * 0.35;
+    const baseDistance = 9.2 + clampedSpeed * 1.4;
+    const baseHeight = 4.5 + (isAirborne ? 1.15 : 0) + clampedSpeed * 0.35;
+    const followDist = baseDistance + portraitFactor * 3.8;
+    const followHeight = baseHeight + portraitFactor * 1.4;
 
     this.desiredCamPos
       .copy(targetPos)
       .addScaledVector(fwd, -followDist);
     this.desiredCamPos.y += followHeight;
 
-    const lookAhead = 7.5 + clampedSpeed * 3.0;
+    const lookAhead = 7.5 + clampedSpeed * 3.0 + portraitFactor * 1.5;
     this.desiredLookAt
       .copy(targetPos)
       .addScaledVector(fwd, lookAhead);
-    this.desiredLookAt.y += isAirborne ? 1.85 : 1.35;
+    this.desiredLookAt.y += (isAirborne ? 1.85 : 1.35) + portraitFactor * 0.25;
 
     const posAlpha = 1 - Math.exp(-Math.min(dt, 0.1) * 9.5);
     const lookAlpha = 1 - Math.exp(-Math.min(dt, 0.1) * 12.0);
@@ -361,8 +376,9 @@ export class SceneManager {
 
     this.camera.lookAt(this.currentLookAt);
 
-    // Subtle dynamic Mario-Kart FOV kick from 58 -> 68 at high speed
-    const targetFov = 58 + Math.min(1, clampedSpeed) * 10;
+    // Dynamic Mario-Kart FOV kick scaled for wide road visibility on portrait & foldables
+    const baseFov = 58 + portraitFactor * 14;
+    const targetFov = baseFov + Math.min(1, clampedSpeed) * 9;
     const fovAlpha = 1 - Math.exp(-Math.min(dt, 0.1) * 7.0);
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, fovAlpha);
@@ -375,13 +391,18 @@ export class SceneManager {
     angle: number,
     radius: number,
     height: number,
-    lookAtY = 1.2
+    lookAtY = 1.2,
+    adaptForPortrait = true
   ): void {
     if (this.disposed) return;
 
-    const x = center.x + Math.sin(angle) * radius;
-    const z = center.z + Math.cos(angle) * radius;
-    const y = center.y + height;
+    const portraitFactor = adaptForPortrait ? this.getPortraitFactor() : 0;
+    const effectiveRadius = radius * (1 + portraitFactor * 0.42);
+    const effectiveHeight = height + portraitFactor * (height * 0.12);
+
+    const x = center.x + Math.sin(angle) * effectiveRadius;
+    const z = center.z + Math.cos(angle) * effectiveRadius;
+    const y = center.y + effectiveHeight;
 
     this.camera.position.set(x, y, z);
     this.tempVecB.set(center.x, center.y + lookAtY, center.z);
@@ -389,8 +410,9 @@ export class SceneManager {
     this.camera.lookAt(this.tempVecB);
     this.cameraInitialized = false;
 
-    if (Math.abs(this.camera.fov - 54) > 0.1) {
-      this.camera.fov = 54;
+    const orbitFov = 54 + portraitFactor * 6;
+    if (Math.abs(this.camera.fov - orbitFov) > 0.1) {
+      this.camera.fov = orbitFov;
       this.camera.updateProjectionMatrix();
     }
   }
@@ -402,10 +424,12 @@ export class SceneManager {
 
   public resize(): void {
     if (this.disposed) return;
-    const canvas = this.renderer.domElement;
-    const width = Math.max(canvas.clientWidth || window.innerWidth, 1);
-    const height = Math.max(canvas.clientHeight || window.innerHeight, 1);
+    const width = Math.max(window.visualViewport?.width || window.innerWidth, 1);
+    const height = Math.max(window.visualViewport?.height || window.innerHeight, 1);
     this.camera.aspect = width / height;
+    const portraitFactor = this.getPortraitFactor();
+    const baseFov = 58 + portraitFactor * 14;
+    this.camera.fov = baseFov;
     this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(width, height, false);

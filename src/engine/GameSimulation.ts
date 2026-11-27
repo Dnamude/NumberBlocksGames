@@ -257,9 +257,10 @@ export class GameSimulation {
 
     this.garageKart.setDriver(this.selectedRacer);
     const driverHeight = this.garageKart.driverRig.totalHeight;
+    const portraitFactor = this.sceneManager.getPortraitFactor();
     this.garageCamRadius = 6.6 + driverHeight * 1.15;
-    this.garageCamHeight = 2.6 + driverHeight * 0.42;
-    this.garageCamLookAtY = 1.05 + driverHeight * 0.36;
+    this.garageCamHeight = 2.6 + driverHeight * 0.42 + portraitFactor * 0.5;
+    this.garageCamLookAtY = 1.05 + driverHeight * 0.36 - portraitFactor * 0.15;
     this.sound.updateKartMotion(0, false, false);
     this.sound.setFinalStretch(false);
     this.sound.speakCharacter(
@@ -853,12 +854,19 @@ export class GameSimulation {
 
     const gantrySample = this.track.sampleAt(12);
     const orbitAngle = Math.sin(this.elapsedTime * 0.22) * 0.65 + 0.35;
+    const portraitFactor = this.sceneManager.getPortraitFactor();
+    const isCompactViewport = portraitFactor > 0.2;
+    const titleRadius = isCompactViewport ? 21.5 + portraitFactor * 3.0 : 19.5;
+    const titleHeight = isCompactViewport ? 10.2 + portraitFactor * 2.4 : 8.8;
+    const titleLookAtY = isCompactViewport ? 1.8 - portraitFactor * 0.45 : 2.6;
+
     this.sceneManager.setCameraOrbit(
       gantrySample.position,
       orbitAngle,
-      19.5,
-      8.8,
-      2.6
+      titleRadius,
+      titleHeight,
+      titleLookAtY,
+      true
     );
     this.sceneManager.updateEnvironment(dt, this.elapsedTime, gantrySample.position);
   }
@@ -876,9 +884,10 @@ export class GameSimulation {
 
     // Dynamically frame kart & tall Numberblocks between top banner and bottom 1-10 tiles
     const driverHeight = this.garageKart.driverRig.totalHeight;
+    const portraitFactor = this.sceneManager.getPortraitFactor();
     const targetRadius = 6.6 + driverHeight * 1.15;
-    const targetHeight = 2.6 + driverHeight * 0.42;
-    const targetLookAtY = 1.05 + driverHeight * 0.36;
+    const targetHeight = 2.6 + driverHeight * 0.42 + portraitFactor * 0.5;
+    const targetLookAtY = 1.05 + driverHeight * 0.36 - portraitFactor * 0.15;
     const camAlpha = 1 - Math.exp(-7.5 * dt);
     this.garageCamRadius = THREE.MathUtils.lerp(this.garageCamRadius, targetRadius, camAlpha);
     this.garageCamHeight = THREE.MathUtils.lerp(this.garageCamHeight, targetHeight, camAlpha);
@@ -889,7 +898,8 @@ export class GameSimulation {
       0.32,
       this.garageCamRadius,
       this.garageCamHeight,
-      this.garageCamLookAtY
+      this.garageCamLookAtY,
+      true
     );
     this.sceneManager.updateEnvironment(dt, this.elapsedTime, GARAGE_ORIGIN);
   }

@@ -268,11 +268,14 @@ export class UIManager {
   private hudRacerName!: HTMLElement;
   private hudBlobsValue!: HTMLElement;
   private hudCountTrack!: HTMLElement;
+  private hudCountPips!: HTMLElement;
+  private hudCountSummary!: HTMLElement;
   private hudCountNodes: HTMLElement[] = [];
   private hudRallyWrap!: HTMLElement;
   private hudPosPill!: HTMLElement;
   private hudTrackFill!: HTMLElement;
   private hudTrackKartDot!: HTMLElement;
+  private hudCommentaryPill!: HTMLElement;
   private hudCommentaryText!: HTMLElement;
   private hudCountdownStamp!: HTMLElement;
   private hudCountPopup!: HTMLElement;
@@ -337,6 +340,8 @@ export class UIManager {
   // Timers & active touch pointers
   private mathBannerTimer: number | null = null;
   private countPopupTimer: number | null = null;
+  private commentaryTimer: number | null = null;
+  private lastCommentary = '';
   private readonly leftPointers = new Set<number>();
   private readonly rightPointers = new Set<number>();
   private readonly jumpPointers = new Set<number>();
@@ -398,22 +403,29 @@ export class UIManager {
     const top = el('div', 'nb-title-top');
 
     const logoStack = el('div', 'nb-logo-stack');
-    const wordRow = el('div', 'nb-logo-word-row');
-    const word = 'NUMBERBLOCK';
-    for (let i = 0; i < word.length; i += 1) {
-      const letter = el('span', 'nb-logo-letter', word[i]);
-      letter.style.backgroundColor =
-        TITLE_LETTER_COLORS[i % TITLE_LETTER_COLORS.length];
-      if (letter.style.backgroundColor === 'rgb(253, 216, 53)') {
-        letter.style.color = '#1b2a4a';
+    const wordRow = el('div', 'nb-logo-word-row nb-logo-words');
+    const wordGroups = ['NUMBER', 'BLOCK'] as const;
+    let letterIndex = 0;
+    for (const groupWord of wordGroups) {
+      const groupEl = el('div', 'nb-logo-word-group');
+      for (let i = 0; i < groupWord.length; i += 1) {
+        const letter = el('span', 'nb-logo-letter', groupWord[i]);
+        const bg =
+          TITLE_LETTER_COLORS[letterIndex % TITLE_LETTER_COLORS.length];
+        letter.style.backgroundColor = bg;
+        if (bg === '#FDD835') {
+          letter.style.color = '#1b2a4a';
+        }
+        groupEl.appendChild(letter);
+        letterIndex += 1;
       }
-      wordRow.appendChild(letter);
+      wordRow.appendChild(groupEl);
     }
 
     const rallyRibbon = el('div', 'nb-logo-rally-ribbon', 'RALLY!');
     const subtitle = el(
       'div',
-      'nb-logo-subtitle',
+      'nb-logo-subtitle nb-title-sub',
       'Mount Numberland Pedal-Car Adventure'
     );
     logoStack.append(wordRow, rallyRibbon, subtitle);
@@ -520,10 +532,14 @@ export class UIManager {
 
     const backBtn = el(
       'button',
-      'nb-btn nb-btn--white',
-      '← Back'
+      'nb-btn nb-btn--white nb-garage-back-btn'
     ) as HTMLButtonElement;
     backBtn.type = 'button';
+    backBtn.setAttribute('aria-label', 'Back to Title');
+    backBtn.append(
+      el('span', undefined, '←'),
+      el('span', 'nb-hide-xs', ' Back')
+    );
     this.listen(backBtn, 'click', () => this.handlers.onBackToTitle());
 
     const banner = el('div', 'nb-card nb-garage-banner');
@@ -543,10 +559,13 @@ export class UIManager {
 
     const countBtn = el(
       'button',
-      'nb-btn nb-btn--sun',
-      'Count Blocks!'
+      'nb-btn nb-btn--sun nb-garage-count-btn'
     ) as HTMLButtonElement;
     countBtn.type = 'button';
+    countBtn.setAttribute('aria-label', 'Count Blocks');
+    const countLabel = el('span');
+    countLabel.append('Count', el('span', 'nb-hide-xs', ' Blocks'), '!');
+    countBtn.append(countLabel);
     this.listen(countBtn, 'click', () =>
       this.handlers.onCountRacerBlocks(this.selectedRacer)
     );
@@ -638,6 +657,9 @@ export class UIManager {
     // Top-Center: Count Track / Rally Progress + Commentary Pill
     const center = el('div', 'nb-hud-center');
     this.hudCountTrack = el('div', 'nb-card nb-count-track');
+    this.hudCountPips = el('div', 'nb-count-pips');
+    this.hudCountSummary = el('span', 'nb-count-summary', '0 / 10');
+    this.hudCountTrack.append(this.hudCountPips, this.hudCountSummary);
     this.rebuildCountTrack(10);
 
     this.hudRallyWrap = el('div', 'nb-card nb-rally-progress-wrap');
@@ -649,16 +671,16 @@ export class UIManager {
     const flag = el('span', 'nb-track-flag', '🏁');
     this.hudRallyWrap.append(this.hudPosPill, trackBar, flag);
 
-    const commentaryPill = el('div', 'nb-commentary-pill');
+    this.hudCommentaryPill = el('div', 'nb-commentary-pill');
     const majorThreeTag = el('span', 'nb-major-three-tag', '3');
-    this.hudCommentaryText = el(
-      'span',
-      undefined,
-      'Ready, steady, pedal!'
-    );
-    commentaryPill.append(majorThreeTag, this.hudCommentaryText);
+    this.hudCommentaryText = el('span', undefined, '');
+    this.hudCommentaryPill.append(majorThreeTag, this.hudCommentaryText);
 
-    center.append(this.hudCountTrack, this.hudRallyWrap, commentaryPill);
+    center.append(
+      this.hudCountTrack,
+      this.hudRallyWrap,
+      this.hudCommentaryPill
+    );
 
     // Top-Right: Home & Settings Buttons
     const right = el('div', 'nb-hud-right');
@@ -735,7 +757,7 @@ export class UIManager {
 
     const desktopHint = el(
       'div',
-      'nb-desktop-hint',
+      'nb-desktop-hint nb-kbd-hint',
       '← → Steer • SPACE Jump'
     );
 
@@ -759,13 +781,14 @@ export class UIManager {
   }
 
   private rebuildCountTrack(target: number): void {
-    this.hudCountTrack.replaceChildren();
+    this.hudCountPips.replaceChildren();
     this.hudCountNodes = [];
     for (let n = 1; n <= target; n += 1) {
       const node = el('span', 'nb-count-node', String(n));
       this.hudCountNodes.push(node);
-      this.hudCountTrack.appendChild(node);
+      this.hudCountPips.appendChild(node);
     }
+    this.hudCountSummary.textContent = `0 / ${target}`;
   }
 
   private bindHoldTouchButton(
@@ -1373,6 +1396,7 @@ export class UIManager {
 
     if (screen !== 'playing' && screen !== 'countdown') {
       this.clearHeldTouchInputs();
+      this.clearCommentaryToast();
     }
     if (screen !== 'garage') {
       this.updateGarageCountHighlight(null, NUMBERBLOCK_SPECS[this.selectedRacer].id);
@@ -1460,6 +1484,8 @@ export class UIManager {
       if (this.hudCountNodes.length !== target) {
         this.rebuildCountTrack(target);
       }
+      const clampedDone = Math.max(0, Math.min(target, hud.countProgress));
+      this.hudCountSummary.textContent = `${clampedDone} / ${target}`;
       for (let i = 0; i < this.hudCountNodes.length; i += 1) {
         const num = (i + 1) as NumberblockId;
         const node = this.hudCountNodes[i];
@@ -1495,8 +1521,11 @@ export class UIManager {
         spec.id === 10 ? '#E53935' : spec.primaryColor;
     }
 
-    if (hud.commentary) {
-      this.hudCommentaryText.textContent = hud.commentary;
+    const nextCommentary = hud.commentary.trim();
+    if (!nextCommentary) {
+      this.lastCommentary = '';
+    } else if (nextCommentary !== this.lastCommentary) {
+      this.showCommentaryToast(nextCommentary);
     }
 
     const boostReady = hud.boostCharge >= 0.85;
@@ -1699,6 +1728,7 @@ export class UIManager {
       window.clearTimeout(this.countPopupTimer);
       this.countPopupTimer = null;
     }
+    this.clearCommentaryToast();
     this.clearHeldTouchInputs();
     for (const off of this.cleanups) {
       off();
@@ -1713,6 +1743,33 @@ export class UIManager {
   // =========================================================================
   // Helpers
   // =========================================================================
+
+  private showCommentaryToast(text: string): void {
+    this.lastCommentary = text;
+    this.hudCommentaryText.textContent = text;
+    if (this.commentaryTimer !== null) {
+      window.clearTimeout(this.commentaryTimer);
+      this.commentaryTimer = null;
+    }
+    this.hudCommentaryPill.classList.remove('is-visible');
+    void this.hudCommentaryPill.offsetWidth;
+    this.hudCommentaryPill.classList.add('is-visible');
+    this.commentaryTimer = window.setTimeout(() => {
+      this.hudCommentaryPill.classList.remove('is-visible');
+      this.commentaryTimer = null;
+    }, 3000);
+  }
+
+  private clearCommentaryToast(): void {
+    if (this.commentaryTimer !== null) {
+      window.clearTimeout(this.commentaryTimer);
+      this.commentaryTimer = null;
+    }
+    this.lastCommentary = '';
+    if (this.hudCommentaryPill) {
+      this.hudCommentaryPill.classList.remove('is-visible');
+    }
+  }
 
   private setToggleState(btn: HTMLButtonElement, on: boolean): void {
     btn.classList.toggle('is-on', on);
